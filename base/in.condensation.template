@@ -1,0 +1,61 @@
+# Parametric 2D vapor-condensation template derived from run/condensation
+#
+# This template is rendered into case-local in.condensation files by
+# scripts/generate_cases.py. The droplet geometry is a 2D circular-cap
+# ("kamaboko") cross-section written into each case directory as sdata.droplet.
+
+seed                __SEED__
+dimension           2
+
+global              gridcut __GRIDCUT__
+
+# Boundary styles are injected by the case generator.
+# x is the lateral direction. ylo is the wall, yhi is the outletv boundary.
+boundary            __BOUNDARY_X__ __BOUNDARY_Y__ __BOUNDARY_Z__
+
+variable xlo index  __XLO__
+variable xhi index  __XHI__
+variable ylo index  __YLO__
+variable yhi index  __YHI__
+variable zlo index  __ZLO__
+variable zhi index  __ZHI__
+
+variable Twall index __TWALL__
+variable coeff index __COEFF__
+variable top_vy index __TOP_VY__
+variable nrho_vapor index __VAPOR_NRHO__
+variable nrho_emit equal ${coeff}*${nrho_vapor}
+
+create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
+create_grid         __GRID_NX__ __GRID_NY__ 1
+
+balance_grid        rcb cell
+
+global              fnum __FNUM__
+
+species             water.species H2O
+mixture             water H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_vapor}
+mixture             droplet_emit H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_emit}
+
+__GEOMETRY_SECTION__
+
+surf_collide        droplet_sc evapref ${Twall} ${coeff}
+surf_collide        wall_sc diffuse ${Twall} 1.0
+surf_collide        top_out outletv 0.0 ${top_vy} 0.0
+
+__SURF_MODIFY_SECTION__
+__SURFACE_EMIT_SECTION__
+bound_modify        ylo collide wall_sc
+bound_modify        yhi collide top_out
+
+collide             vss water water.vss
+
+timestep            __TIMESTEP__
+
+stats               __STATS_EVERY__
+stats_style         step cpu np nattempt ncoll nscoll nscheck
+
+__PRE_RUN_SECTION__
+
+__DIAGNOSTICS_SECTION__
+run                 __PRODUCTION_RUN_STEPS__

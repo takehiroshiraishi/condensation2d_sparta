@@ -1,0 +1,12 @@
+# VSS collision model parameters for each species
+#
+# diameter (m)
+# omega (unitless)
+# tref (K)
+# alpha (unitless)
+# Zrotinf (unitless)
+# T* (K)
+# C1 (K)
+# C2 (K^(1/3))
+
+H2O   2.82E-10    0.91  273.15  1.0   3.0 305.0 5.8 17.0

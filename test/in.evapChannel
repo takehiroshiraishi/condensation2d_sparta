@@ -1,0 +1,86 @@
+# parameters
+variable macroun index 0.1
+variable coeff equal 0.3
+variable nxcell equal 400
+variable nxliqcell equal 100
+variable nycell equal 100
+variable nmol_per_cell equal 10
+variable dt_nodim equal 1
+variable cellw_nodim equal 1
+variable dump_freq equal 500000
+
+# nondimentionalization parameters
+variable Tw equal 333.15
+# variable uref equal 571.0299
+variable uref equal sqrt(${Tw}*8.314/0.018)
+variable pref equal 19946
+variable nref equal ${pref}/1.3806e-23/${Tw}
+variable lambda equal 1/(sqrt(2)*3.1415*5.5e-10*5.5e-10*${nref})*(${Tw}/350)^0.547
+variable dtref equal ${lambda}/${uref}*0.8862
+
+# actual input of simulation
+variable macrou equal ${macroun}*${uref}
+variable cellw equal ${lambda}*${cellw_nodim}
+variable nw equal ${coeff}*${nref}
+variable lx equal ${nxcell}*${cellw}
+variable lliq equal ${nxliqcell}*${cellw}
+variable ly equal ${nycell}*${cellw}
+variable weight equal ${nw}*${cellw}^2/${nmol_per_cell}
+variable dt equal ${dtref}*${dt_nodim}
+
+seed                12345
+dimension           2
+global              gridcut 0.0 comm/sort yes
+
+boundary            rs ss pp
+
+create_box          0 ${lx} 0 ${ly} -1.5e-8 1.5e-8
+create_grid         ${nxcell} ${nycell} 1
+balance_grid        rcb cell
+
+global              fnum ${weight}
+#global              fnum 3e9
+species             air.species H2O
+mixture             water H2O vstream 0.0 0 0 temp ${Tw} nrho ${nw}
+
+surf_collide        out outletvparabolic ${macrou} 1 ${ly}
+#surf_collide        out outletv ${macrou} 0 0
+bound_modify        xhi collide out
+
+surf_collide	    wall diffuse ${Tw} 1.0
+bound_modify	    yhi collide wall
+
+region              liquid block 0 ${lliq} -1.5e-8 1.5e-8 INF INF
+fix                 in emit/face water ylo region liquid
+surf_collide        inlet evaprefpart ${Tw} ${coeff} 0 0.0 ${lliq}
+bound_modify        ylo collide inlet
+
+collide             vss water air.vss
+
+timestep            ${dt}
+
+compute             1 grid all water nrho u v trot
+compute             2 property/grid all xc yc
+compute             temp thermal/grid all water temp press
+fix                 11 ave/grid all 1 ${dump_freq} ${dump_freq} c_1[*] c_temp[*]
+
+variable nnodim grid f_11[1]/v_nref
+variable unodim grid f_11[2]/v_uref
+variable vnodim grid f_11[3]/v_uref
+variable trotnodim grid f_11[4]/v_Tw
+variable tnodim grid f_11[5]/v_Tw
+variable pnodim grid f_11[6]/v_pref
+variable xnodim grid c_2[1]/v_lambda
+variable ynodim grid c_2[2]/v_lambda
+
+dump                mydump image all 2 image_*.ppm type type pdiam 5e-7 zoom 1.75
+dump_modify         mydump pad 4
+
+fix                 1 balance 10 1.0 rcb part
+
+stats               100
+stats_style         step cpu np nattempt ncoll nscoll nscheck
+run                 500
+
+shell convert image_*.ppm video.gif
+shell firefox video.gif

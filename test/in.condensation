@@ -1,0 +1,110 @@
+# 3d vapor condensation on a static quarter-spherical droplet
+#
+# Quarter-domain symmetry reduction:
+# - the simulation box is restricted to x >= 0 and y >= 0
+# - xlo and ylo use specularly reflecting box boundaries as symmetry planes
+# - no explicit surface elements are created on the symmetry planes
+# - the droplet is imported from the full sphere mesh and clipped to the box,
+#   which keeps only the curved spherical patch inside the first quadrant
+# - the bottom wall is the zlo box boundary treated as a fixed-temperature surface
+# - top boundary is open, while vapor is injected from zhi with downward velocity
+# - all surfaces are static; no growth, motion, or geometry updates are used
+
+seed                12345
+dimension           3
+
+global              gridcut 0.1
+
+# xlo and ylo are the symmetry planes and use specular reflection.
+# xhi and yhi retain the same reflective lateral treatment as before.
+# zlo is the fixed-temperature solid wall treated as a surface boundary.
+# zhi remains open for outflow plus imposed inflow from the top.
+boundary            rr rr so
+
+# Domain and surface parameters
+variable xlo index  0.0
+variable xhi index  2.0
+variable ylo index  0.0
+variable yhi index  2.0
+variable zlo index  0.0
+variable zhi index  10.0
+
+variable Twall index 300.0
+variable coeff equal 0.3
+variable vin index 1.0
+
+# Sessile droplet geometry. The droplet center is constrained to x=y=0.
+# The z-center is set from the prescribed contact angle. Since the bottom wall
+# is the zlo box boundary at z = 0, the imported sphere can be clipped
+# directly against that plane to form a spherical-cap droplet without any
+# explicit wall/droplet surface overlap.
+variable zwall index 0.0
+variable rdrop index 1.0
+variable theta_contact index 120.0
+variable surface_gap index 0.0
+variable zdrop equal ${zwall}-${rdrop}*cos(${theta_contact}*PI/180.0)+${surface_gap}
+variable sdrop equal 2.0*${rdrop}
+variable surf_clip_frac index 1.0e-6
+
+create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
+create_grid         32 32 32
+
+balance_grid        rcb cell
+
+global              nrho 1.0 fnum 0.0005
+
+# Keep the original species and collision model.
+species             air.species N O
+mixture             air N O vstream 0.0 0.0 -${vin} temp ${Twall}
+
+# Explicit surface:
+# - sdata.sphere is clipped against the simulation box so only the curved
+#   droplet patch inside x >= 0, y >= 0, z >= 0 remains
+# The clip keyword deletes any triangles that would lie in the x=0, y=0, or
+# z=0 box planes, so no explicit planar cut faces overlap the symmetry
+# boundaries or the bottom wall boundary.
+# A tiny clip fraction snaps points that are numerically very near the box
+# faces onto the faces before clipping to avoid sliver triangles.
+read_surf           sdata.sphere group droplet &
+                    scale ${sdrop} ${sdrop} ${sdrop} trans 0.0 0.0 ${zdrop} &
+                    clip ${surf_clip_frac}
+
+# Condensing interface on the quarter-sphere patch.
+# Use the standard evapref style for compatibility with builds that do not
+# include the optional evapref/curved extension.
+surf_collide        droplet_sc evapref ${Twall} ${coeff}
+
+# Bottom wall is the zlo boundary held at the same fixed temperature
+# as the droplet.
+surf_collide        wall_sc diffuse ${Twall} 1.0
+
+surf_modify         droplet collide droplet_sc
+bound_modify        zlo collide wall_sc
+
+collide             vss air air.vss
+
+# Open top boundary with prescribed downward vapor inflow.
+fix                 in emit/face air zhi twopass
+
+timestep            0.0001
+
+# Preserve the original surface diagnostics and image-oriented output style.
+# The image dump is restricted to the full physical gas region z > 0 so the
+# rendered movie shows the entire accessible domain above the wall at
+# z = 0, while still avoiding projection artifacts from including z <= 0.
+# Use a smaller particle diameter to reduce projection artifacts near the wall.
+compute             2 surf all air n press ke
+fix                 save ave/surf all 1 50 50 c_2[*] ave running
+
+region              slab block INF INF INF INF 0.01 ${zhi}
+dump                2 image all 50 image.*.ppm type type pdiam 0.01 &
+                    view 70 120 size 512 512 axes yes 0.9 0.02 &
+                    gridz 0.0 proc gline yes 0.005 &
+                    surf f_save[2] 0.0
+dump_modify         2 pad 4 region slab
+
+dump_modify         2 cmap surf min max cf 0.0 2 min orange max green
+
+stats               100
+stats_style         step cpu np nattempt ncoll nscoll nscheck
+run                 1000

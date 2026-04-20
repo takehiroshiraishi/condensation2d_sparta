@@ -1,0 +1,15 @@
+/cases/
+/results/
+
+*.dump
+*.ppm
+*.vtk
+*.vtu
+*.pvtu
+*.pvd
+log.sparta
+slurm-*.out
+slurm-*.err
+
+__pycache__/
+*.pyc
