@@ -74,9 +74,9 @@ def generate_half_arc_surface(path: Path, radius: float, theta_deg: float, surfa
     theta = math.radians(theta_deg)
     center_y = surface_gap - radius * math.cos(theta)
 
-    # Right contact point -> apex, preserving the 2D outward normal direction
-    # consistent with the exterior-gas side of the circle examples in SPARTA.
-    angles = [theta * (1.0 - i / segments) for i in range(segments + 1)]
+    # Apex -> right contact point so that the 2D outward normal
+    # (+z x (p2-p1)) points into the gas region.
+    angles = [theta * (i / segments) for i in range(segments + 1)]
     points = [(radius * math.sin(angle), center_y + radius * math.cos(angle)) for angle in angles]
 
     with path.open("w", encoding="utf-8") as handle:
