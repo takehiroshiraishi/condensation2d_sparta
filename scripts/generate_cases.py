@@ -224,6 +224,42 @@ def render_paraview_grid_description(geometry: dict) -> str:
     )
 
 
+def render_run_single_script() -> str:
+    return "\n".join(
+        [
+            "#!/bin/bash",
+            "#SBATCH --nodes 1",
+            "#SBATCH --job-name condensation2d",
+            "#SBATCH --ntasks-per-node 32",
+            "#SBATCH --cpus-per-task 1",
+            "#SBATCH --time 7-00:00:00",
+            "",
+            "set -euo pipefail",
+            "",
+            'case_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+            'study_root="$(cd "$case_dir/../../.." && pwd)"',
+            "",
+            'module purge',
+            'module load gcc',
+            'module load openmpi',
+            "",
+            'if [[ -n "${SPARTA_BIN:-}" ]]; then',
+            '  sparta_bin="$SPARTA_BIN"',
+            'elif [[ -x "$case_dir/spa_mpi" ]]; then',
+            '  sparta_bin="$case_dir/spa_mpi"',
+            'elif [[ -x "$study_root/spa_mpi" ]]; then',
+            '  sparta_bin="$study_root/spa_mpi"',
+            'else',
+            '  echo "Could not find spa_mpi. Set SPARTA_BIN, place spa_mpi in the case directory, or place one shared spa_mpi at $study_root/spa_mpi." >&2',
+            '  exit 1',
+            'fi',
+            "",
+            'cd "$case_dir"',
+            'srun "$sparta_bin" < in.condensation > log.txt',
+        ]
+    )
+
+
 def build_geometry(case: dict) -> dict:
     defaults = case["defaults"]
     geometry_mode = case["geometry_mode"]
@@ -456,6 +492,9 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
         rendered_input = render_case_input(template_text, case, geometry)
         (case_dir / "in.condensation").write_text(rendered_input + "\n", encoding="utf-8")
         (case_dir / "pv_grid.txt").write_text(render_paraview_grid_description(geometry) + "\n", encoding="utf-8")
+        run_single_path = case_dir / "run_single.sh"
+        run_single_path.write_text(render_run_single_script() + "\n", encoding="utf-8")
+        run_single_path.chmod(0o755)
         generate_half_arc_surface(
             case_dir / "sdata.droplet",
             case["defaults"]["radius"],

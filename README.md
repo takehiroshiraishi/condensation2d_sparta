@@ -37,6 +37,7 @@ Each case receives:
 - `in.condensation`
 - `metadata.json`
 - `pv_grid.txt`
+- `run_single.sh`
 - `sdata.droplet`
 - `water.species`
 - `water.vss`
@@ -57,6 +58,21 @@ MPI example:
 ```bash
 SPARTA_LAUNCH="mpirun -np 4" scripts/run_case.sh cases/neighbor_condensation_2d/array_half_dx_8e-06_vtop_m1 ../../src/spa_mpi
 ```
+
+Per-case Slurm launcher:
+
+```bash
+cd cases/neighbor_condensation_2d/single_open_half_vtop_m1
+sbatch run_single.sh
+```
+
+`run_single.sh` looks for the executable in this order:
+
+- `SPARTA_BIN` if you export it before `sbatch`
+- `./spa_mpi` inside the case directory
+- one shared `spa_mpi` at the study root: `run/condensation2d/spa_mpi`
+
+For HPC use, the cleanest setup is usually one shared `spa_mpi` at `run/condensation2d/spa_mpi` or setting `SPARTA_BIN=/path/to/spa_mpi`, rather than creating a separate symlink in every case directory.
 
 ## Run a Sweep
 
