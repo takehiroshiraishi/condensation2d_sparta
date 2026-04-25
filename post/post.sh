@@ -1,0 +1,1 @@
+case_dir="$(pwd)" && study_root="$(cd ../../.. && pwd)" && "$study_root/scripts/sync_from_hpc.sh" user@hpc:/path/to/condensation2d && cd "$study_root" && python3 post/export_paraview_vtk.py --mode all "cases/neighbor_condensation_2d/$(basename "$case_dir")" && paraview "$study_root/cases/neighbor_condensation_2d/$(basename "$case_dir")/vtk_series/grid_steady/grid_steady.pvd"

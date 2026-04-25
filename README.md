@@ -84,6 +84,29 @@ The Slurm array template is:
 
 - `scripts/slurm_array_template.sh`
 
+## Retrieve Results From HPC
+
+To pull case results back from HPC without deleting local-only files such as
+ParaView exports, use:
+
+```bash
+scripts/sync_from_hpc.sh user@hpc:/path/to/condensation2d
+```
+
+This syncs:
+
+- remote `cases/neighbor_condensation_2d/`
+- into local `cases/neighbor_condensation_2d/`
+
+It intentionally does not use `rsync --delete`, so local files created only on
+your machine are preserved.
+
+If your study name differs, pass it explicitly:
+
+```bash
+scripts/sync_from_hpc.sh user@hpc:/path/to/condensation2d my_study_name
+```
+
 ## Post-Process Results
 
 ```bash
