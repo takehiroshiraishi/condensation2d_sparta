@@ -4,7 +4,7 @@ This directory is the 2D analogue of `run/condensation`. It keeps the same study
 
 ## Layout
 
-- `base/`: reusable template, default sweep configuration, and shared species/VSS files
+- `base/`: reusable template and shared species/VSS files
 - `cases/`: generated self-contained case directories plus study manifests
 - `scripts/`: case generation and run helpers
 - `post/`: post-processing and ParaView export helpers
@@ -25,8 +25,10 @@ In both modes:
 ## Generate Cases
 
 ```bash
-python3 scripts/generate_cases.py --config base/sweep_defaults.json --force
+python3 scripts/generate_cases.py --config cases/neighbor_condensation_2d/parameters.json --force
 ```
+
+If there is exactly one `cases/*/parameters.json` file, `--config` is optional.
 
 Generated cases live under:
 
@@ -145,7 +147,7 @@ The centerline export is:
 
 ## Which Files To Edit
 
-- Edit `base/sweep_defaults.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
+- Edit `cases/<study_name>/parameters.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
 - Edit `base/in.condensation.template` to change the SPARTA calculation itself.
 - Edit `scripts/generate_cases.py` to change geometry generation, case naming, symmetry logic, or diagnostics.
 - Edit `post/process_results.py` to change derived metrics, normalization, CSV columns, or plots.

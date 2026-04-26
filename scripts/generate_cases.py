@@ -14,7 +14,7 @@ STUDY_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = STUDY_ROOT / "base"
 CASES_DIR = STUDY_ROOT / "cases"
 TEMPLATE_PATH = BASE_DIR / "in.condensation.template"
-DEFAULT_CONFIG_PATH = BASE_DIR / "sweep_defaults.json"
+DEFAULT_CONFIG_NAME = "parameters.json"
 ASSET_FILES = ("water.species", "water.vss")
 
 
@@ -27,6 +27,26 @@ def dump_json(path: Path, data: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def resolve_config_path(config_arg: Path | None) -> Path:
+    if config_arg is not None:
+        return config_arg.resolve()
+
+    matches = sorted(CASES_DIR.glob(f"*/{DEFAULT_CONFIG_NAME}"))
+    if len(matches) == 1:
+        return matches[0].resolve()
+    if not matches:
+        raise FileNotFoundError(
+            f"No default configuration found. Create cases/<study_name>/{DEFAULT_CONFIG_NAME} "
+            "or pass --config explicitly."
+        )
+
+    match_list = "\n".join(f"  - {path}" for path in matches)
+    raise FileNotFoundError(
+        "Multiple study parameter files were found. Pass --config explicitly.\n"
+        f"{match_list}"
+    )
 
 
 def format_float(value: float) -> str:
@@ -526,17 +546,24 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate parametric SPARTA condensation2d cases.")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to the JSON sweep configuration.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=f"Path to the JSON sweep configuration. Defaults to the only cases/*/{DEFAULT_CONFIG_NAME} file if present.",
+    )
     parser.add_argument("--force", action="store_true", help="Replace existing generated case directories.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    config = load_json(args.config.resolve())
+    config_path = resolve_config_path(args.config)
+    config = load_json(config_path)
     study_dir = CASES_DIR / config["study_name"]
-    rows = generate_cases(args.config.resolve(), args.force)
+    rows = generate_cases(config_path, args.force)
     print(f"Generated {len(rows)} case directories under {study_dir}")
+    print(f"Parameters: {config_path}")
     print(f"Study manifest: {study_dir / 'case_manifest.csv'}")
     print(f"Active manifest: {CASES_DIR / 'case_manifest.csv'}")
     return 0
