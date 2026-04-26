@@ -271,7 +271,7 @@ def render_run_single_script() -> str:
             "",
             "set -euo pipefail",
             "",
-            'case_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+            'case_dir="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"',
             'cases_dir="$(cd "$case_dir/../.." && pwd)"',
             'sparta_bin="${SPARTA_BIN:-$cases_dir/spa_mpi}"',
             "",
