@@ -122,22 +122,11 @@ def select_axis_diag45(table: np.ndarray, x0: float, y0: float, dx: float, dy: f
     return s[order], rows["temp"][order], rows["press"][order]
 
 
-def write_combined_table(path: Path, profiles: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]) -> None:
-    npoints = min(len(values[0]) for values in profiles.values())
-
+def write_profile_table(path: Path, distance: np.ndarray, temperature: np.ndarray, pressure: np.ndarray) -> None:
     with path.open("w", encoding="utf-8") as handle:
-        handle.write(
-            "dist_x_m press_x_Pa temp_x_K "
-            "dist_y_m press_y_Pa temp_y_K "
-            "dist_45_m press_45_Pa temp_45_K\n"
-        )
-
-        for i in range(npoints):
-            row: list[float | str] = []
-            for key in ("x_axis", "y_axis", "diag_45deg"):
-                s, temp, press = profiles[key]
-                row.extend([s[i], press[i], temp[i]])
-            handle.write(" ".join(str(value) for value in row) + "\n")
+        handle.write("dist_m press_Pa temp_K\n")
+        for s, temp, press in zip(distance, temperature, pressure):
+            handle.write(f"{s} {press} {temp}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,6 +141,9 @@ def main() -> int:
     case_dir = args.case_dir.resolve()
     output_dir = case_dir / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    legacy_combined_path = output_dir / "steady_profiles.dat"
+    if legacy_combined_path.exists():
+        legacy_combined_path.unlink()
 
     metadata = load_json(case_dir / "metadata.json")
     vtr_path = latest_vtr_path(case_dir)
@@ -168,11 +160,14 @@ def main() -> int:
         "diag_45deg": select_axis_diag45(table, x0, y0, dx, dy),
     }
 
-    write_combined_table(output_dir / "steady_profiles.dat", profiles)
+    for name, values in profiles.items():
+        distance, temperature, pressure = values
+        write_profile_table(output_dir / f"{name}.dat", distance, temperature, pressure)
 
     print(f"Read steady frame: {vtr_path}")
     print(f"Droplet center used: x={x0:.12g}, y={y0:.12g}")
-    print(f"Wrote combined profile table to: {output_dir / 'steady_profiles.dat'}")
+    for name in profiles:
+        print(f"Wrote profile table to: {output_dir / f'{name}.dat'}")
     return 0
 
 
