@@ -70,7 +70,7 @@ def build_frame(raw_frame: dict, metadata: dict) -> dict:
     if not source_fields:
         source_fields = [name for name in ("f_centerline_avg[1]", "f_centerline_avg[2]", "f_centerline_avg[3]", "f_centerline_avg[4]", "f_centerline_avg[5]") if name in ordered_rows[0]]
     target_fields = ("nrho", "u", "v", "temp", "press")
-    for source_name, target_name in zip(source_fields, target_fields, strict=False):
+    for source_name, target_name in zip(source_fields, target_fields):
         for row in ordered_rows:
             row[target_name] = row[source_name]
     for row in ordered_rows:
