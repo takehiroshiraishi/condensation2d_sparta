@@ -4,7 +4,7 @@
     "seed": 12345,
     "gridcut": 0.1,
     "vapor_number_density": 8.5e23,
-    "fnum": 3.0e7,
+    "fnum": 1.0e10,
     "temperature_k": 300.0,
     "condensation_coefficient": 1,
     "radius": 5.0e-6,
