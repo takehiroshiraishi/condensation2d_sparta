@@ -14,6 +14,7 @@ fi
 study_name="$1"
 study_dir="$cases_dir/$study_name"
 parameters_path="$study_dir/parameters.json"
+generate_script_path="$study_dir/generate.sh"
 
 if [[ ! "$study_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid study name: $study_name" >&2
@@ -33,7 +34,19 @@ fi
 
 mkdir -p "$study_dir"
 sed "s/replace_with_study_name/$study_name/g" "$template_path" > "$parameters_path"
+cat > "$generate_script_path" <<EOF
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+study_dir="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+study_root="\$(cd "\$study_dir/../.." && pwd)"
+
+cd "\$study_root"
+python3 scripts/generate_cases.py --config "cases/$study_name/parameters.json" --force
+EOF
+chmod +x "$generate_script_path"
 
 echo "Initialized $study_dir"
 echo "Edit $parameters_path, then run:"
-echo "  (cd \"$study_root\" && python3 scripts/generate_cases.py --config cases/$study_name/parameters.json --force)"
+echo "  $generate_script_path"
