@@ -5,11 +5,24 @@ This directory is the 2D analogue of `run/condensation`. It keeps the same study
 ## Layout
 
 - `base/`: reusable template and shared species/VSS files
-- `cases/`: generated self-contained case directories plus study manifests
+- `cases/`: tracked bootstrap assets such as `init.sh` and `_templates/parameters.json`
+- `cases/studies/`: untracked generated study directories
 - `scripts/`: case generation and run helpers
 - `post/`: post-processing and ParaView export helpers
 - `results/`: summary CSVs and plots
 - `test/`: preserved copied reference area from the original condensation folder
+
+## Initialize A Study
+
+```bash
+./cases/init.sh my_study
+```
+
+This creates:
+
+- `cases/studies/my_study/parameters.json`
+
+Edit that file, then generate cases from it.
 
 ## Implemented Geometry Modes
 
@@ -25,14 +38,14 @@ In both modes:
 ## Generate Cases
 
 ```bash
-python3 scripts/generate_cases.py --config cases/neighbor_condensation_2d/parameters.json --force
+python3 scripts/generate_cases.py --config cases/studies/my_study/parameters.json --force
 ```
 
-If there is exactly one `cases/*/parameters.json` file, `--config` is optional.
+If there is exactly one `cases/studies/*/parameters.json` file, `--config` is optional.
 
 Generated cases live under:
 
-- `cases/<study_name>/<case_name>/`
+- `cases/studies/<study_name>/<case_name>/`
 
 Each case receives:
 
@@ -46,27 +59,37 @@ Each case receives:
 
 The generator also refreshes:
 
-- `cases/case_manifest.csv`
-- `cases/case_list.txt`
+- `cases/studies/<study_name>/run.sh`
+- `cases/studies/<study_name>/case_manifest.csv`
+- `cases/studies/<study_name>/case_list.txt`
 
 ## Run One Case
 
 ```bash
-scripts/run_case.sh cases/neighbor_condensation_2d/single_open_half_vtop_m1 ../../src/spa_serial
+scripts/run_case.sh cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1 ../../src/spa_serial
 ```
 
 MPI example:
 
 ```bash
-SPARTA_LAUNCH="mpirun -np 4" scripts/run_case.sh cases/neighbor_condensation_2d/array_half_dx_8e-06_vtop_m1 ../../src/spa_mpi
+SPARTA_LAUNCH="mpirun -np 4" scripts/run_case.sh cases/studies/neighbor_condensation_2d/array_half_dx_8e-06_vtop_m1 ../../src/spa_mpi
 ```
 
 Per-case Slurm launcher:
 
 ```bash
-cd cases/neighbor_condensation_2d/single_open_half_vtop_m1
+cd cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
 sbatch run_single.sh
 ```
+
+Study-level submit helper:
+
+```bash
+cd cases/studies/my_study
+./run.sh
+```
+
+`run.sh` is not itself submitted with `sbatch`; it loops over the study's cases and runs `sbatch ./run_single.sh` inside each case directory.
 
 `run_single.sh` looks for the executable in this order:
 
@@ -79,7 +102,7 @@ For HPC use, the cleanest setup is usually one shared `spa_mpi` at `run/condensa
 ## Run a Sweep
 
 ```bash
-scripts/run_sweep.sh cases/case_list.txt ../../src/spa_serial
+scripts/run_sweep.sh cases/studies/my_study/case_list.txt ../../src/spa_serial
 ```
 
 The Slurm array template is:
@@ -97,8 +120,8 @@ scripts/sync_from_hpc.sh user@hpc:/path/to/condensation2d
 
 This syncs:
 
-- remote `cases/neighbor_condensation_2d/`
-- into local `cases/neighbor_condensation_2d/`
+- remote `cases/studies/neighbor_condensation_2d/`
+- into local `cases/studies/neighbor_condensation_2d/`
 
 It intentionally does not use `rsync --delete`, so local files created only on
 your machine are preserved.
@@ -129,15 +152,15 @@ The 2D condensation metrics are interpreted per unit out-of-plane depth.
 Last frame only:
 
 ```bash
-python3 post/export_paraview_vtk.py cases/neighbor_condensation_2d/single_open_half_vtop_m1
-paraview cases/neighbor_condensation_2d/single_open_half_vtop_m1/grid_steady_legacy.vtk
+python3 post/export_paraview_vtk.py cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
+paraview cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1/grid_steady_legacy.vtk
 ```
 
 Time series:
 
 ```bash
-python3 post/export_paraview_vtk.py --mode all cases/neighbor_condensation_2d/single_open_half_vtop_m1
-paraview cases/neighbor_condensation_2d/single_open_half_vtop_m1/vtk_series/grid_steady/grid_steady.pvd
+python3 post/export_paraview_vtk.py --mode all cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
+paraview cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1/vtk_series/grid_steady/grid_steady.pvd
 ```
 
 The centerline export is:
@@ -147,7 +170,8 @@ The centerline export is:
 
 ## Which Files To Edit
 
-- Edit `cases/<study_name>/parameters.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
+- Run `./cases/init.sh <study_name>` to create a new study from `cases/_templates/parameters.json`.
+- Edit `cases/studies/<study_name>/parameters.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
 - Edit `base/in.condensation.template` to change the SPARTA calculation itself.
 - Edit `scripts/generate_cases.py` to change geometry generation, case naming, symmetry logic, or diagnostics.
 - Edit `post/process_results.py` to change derived metrics, normalization, CSV columns, or plots.

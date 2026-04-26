@@ -13,6 +13,7 @@ from pathlib import Path
 STUDY_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = STUDY_ROOT / "base"
 CASES_DIR = STUDY_ROOT / "cases"
+STUDIES_DIR = CASES_DIR / "studies"
 TEMPLATE_PATH = BASE_DIR / "in.condensation.template"
 DEFAULT_CONFIG_NAME = "parameters.json"
 ASSET_FILES = ("water.species", "water.vss")
@@ -33,12 +34,12 @@ def resolve_config_path(config_arg: Path | None) -> Path:
     if config_arg is not None:
         return config_arg.resolve()
 
-    matches = sorted(CASES_DIR.glob(f"*/{DEFAULT_CONFIG_NAME}"))
+    matches = sorted(STUDIES_DIR.glob(f"*/{DEFAULT_CONFIG_NAME}"))
     if len(matches) == 1:
         return matches[0].resolve()
     if not matches:
         raise FileNotFoundError(
-            f"No default configuration found. Create cases/<study_name>/{DEFAULT_CONFIG_NAME} "
+            f"No default configuration found. Create cases/studies/<study_name>/{DEFAULT_CONFIG_NAME} "
             "or pass --config explicitly."
         )
 
@@ -280,6 +281,36 @@ def render_run_single_script() -> str:
     )
 
 
+def render_study_run_script() -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "",
+            "set -euo pipefail",
+            "",
+            'study_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+            'case_list="$study_dir/case_list.txt"',
+            "",
+            'if [[ ! -f "$case_list" ]]; then',
+            '  echo "Case list not found: $case_list" >&2',
+            "  exit 1",
+            "fi",
+            "",
+            'while IFS= read -r case_relpath; do',
+            '  [[ -z "$case_relpath" ]] && continue',
+            '  case_dir="$study_dir/$(basename "$case_relpath")"',
+            '  run_script="$case_dir/run_single.sh"',
+            '  if [[ ! -x "$run_script" ]]; then',
+            '    echo "Missing run script: $run_script" >&2',
+            "    exit 1",
+            "  fi",
+            '  echo "Submitting $run_script"',
+            '  (cd "$case_dir" && sbatch ./run_single.sh)',
+            'done < "$case_list"',
+        ]
+    )
+
+
 def build_geometry(case: dict) -> dict:
     defaults = case["defaults"]
     geometry_mode = case["geometry_mode"]
@@ -479,23 +510,23 @@ def iter_cases(config: dict) -> list[dict]:
 
 def write_manifest(study_dir: Path, rows: list[dict]) -> None:
     fieldnames = ["case_name", "case_relpath", "geometry_mode", "top_boundary_velocity", "spacing", "droplet_count"]
-    for path in (study_dir / "case_manifest.csv", CASES_DIR / "case_manifest.csv"):
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow(row)
-    for path in (study_dir / "case_list.txt", CASES_DIR / "case_list.txt"):
-        with path.open("w", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(f"{row['case_relpath']}\n")
+    manifest_path = study_dir / "case_manifest.csv"
+    with manifest_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    case_list_path = study_dir / "case_list.txt"
+    with case_list_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(f"{row['case_relpath']}\n")
 
 
 def generate_cases(config_path: Path, force: bool) -> list[dict]:
     config = load_json(config_path)
     template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
     study_name = config["study_name"]
-    study_dir = CASES_DIR / study_name
+    study_dir = STUDIES_DIR / study_name
     study_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
 
@@ -532,7 +563,7 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
         manifest_rows.append(
             {
                 "case_name": case_name,
-                "case_relpath": f"cases/{study_name}/{case_name}",
+                "case_relpath": f"cases/studies/{study_name}/{case_name}",
                 "geometry_mode": case["geometry_mode"],
                 "top_boundary_velocity": case["top_boundary_velocity"],
                 "spacing": "" if case["spacing"] is None else case["spacing"],
@@ -541,6 +572,9 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
         )
 
     write_manifest(study_dir, manifest_rows)
+    run_script_path = study_dir / "run.sh"
+    run_script_path.write_text(render_study_run_script() + "\n", encoding="utf-8")
+    run_script_path.chmod(0o755)
     return manifest_rows
 
 
@@ -550,7 +584,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help=f"Path to the JSON sweep configuration. Defaults to the only cases/*/{DEFAULT_CONFIG_NAME} file if present.",
+        help=f"Path to the JSON sweep configuration. Defaults to the only cases/studies/*/{DEFAULT_CONFIG_NAME} file if present.",
     )
     parser.add_argument("--force", action="store_true", help="Replace existing generated case directories.")
     return parser.parse_args()
@@ -560,12 +594,11 @@ def main() -> int:
     args = parse_args()
     config_path = resolve_config_path(args.config)
     config = load_json(config_path)
-    study_dir = CASES_DIR / config["study_name"]
+    study_dir = STUDIES_DIR / config["study_name"]
     rows = generate_cases(config_path, args.force)
     print(f"Generated {len(rows)} case directories under {study_dir}")
     print(f"Parameters: {config_path}")
     print(f"Study manifest: {study_dir / 'case_manifest.csv'}")
-    print(f"Active manifest: {CASES_DIR / 'case_manifest.csv'}")
     return 0
 
 

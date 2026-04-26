@@ -1,4 +1,8 @@
-/cases/
+/cases/*
+!/cases/_templates/
+!/cases/_templates/parameters.json
+!/cases/init.sh
+/cases/studies/
 /results/
 
 *.dump
