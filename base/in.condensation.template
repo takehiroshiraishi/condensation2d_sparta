@@ -10,7 +10,7 @@ dimension           2
 global              gridcut __GRIDCUT__
 
 # Boundary styles are injected by the case generator.
-# x is the lateral direction. ylo is the wall, yhi is the outletv boundary.
+# x is the lateral direction. ylo is the wall, yhi is the open top boundary.
 boundary            __BOUNDARY_X__ __BOUNDARY_Y__ __BOUNDARY_Z__
 
 variable xlo index  __XLO__
@@ -22,8 +22,9 @@ variable zhi index  __ZHI__
 
 variable Twall index __TWALL__
 variable coeff index __COEFF__
-variable top_vy index __TOP_VY__
 variable nrho_vapor index __VAPOR_NRHO__
+variable top_temp index __TOP_TEMP__
+variable top_nrho index __TOP_NRHO__
 variable nrho_emit equal ${coeff}*${nrho_vapor}
 
 create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
@@ -35,16 +36,18 @@ global              fnum __FNUM__
 
 species             water.species H2O
 mixture             water H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_vapor}
+mixture             waterout H2O vstream 0.0 0.0 0.0 temp ${top_temp} nrho ${top_nrho}
 mixture             droplet_emit H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_emit}
 
 __GEOMETRY_SECTION__
 
 surf_collide        droplet_sc evapref ${Twall} ${coeff}
 surf_collide        wall_sc diffuse ${Twall} 1.0
-surf_collide        top_out outletv 0.0 ${top_vy} 0.0
+surf_collide        top_out vanish
 
 __SURF_MODIFY_SECTION__
 __SURFACE_EMIT_SECTION__
+fix                 out_emit emit/face waterout yhi
 bound_modify        ylo collide wall_sc
 bound_modify        yhi collide top_out
 

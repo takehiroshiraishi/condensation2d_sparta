@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import math
 import shutil
@@ -13,7 +14,6 @@ from pathlib import Path
 STUDY_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = STUDY_ROOT / "base"
 CASES_DIR = STUDY_ROOT / "cases"
-STUDIES_DIR = CASES_DIR / "studies"
 TEMPLATE_PATH = BASE_DIR / "in.condensation.template"
 DEFAULT_CONFIG_NAME = "parameters.json"
 ASSET_FILES = ("water.species", "water.vss")
@@ -34,12 +34,14 @@ def resolve_config_path(config_arg: Path | None) -> Path:
     if config_arg is not None:
         return config_arg.resolve()
 
-    matches = sorted(STUDIES_DIR.glob(f"*/{DEFAULT_CONFIG_NAME}"))
+    matches = sorted(
+        path for path in CASES_DIR.glob(f"*/{DEFAULT_CONFIG_NAME}") if path.parent.name != "_templates"
+    )
     if len(matches) == 1:
         return matches[0].resolve()
     if not matches:
         raise FileNotFoundError(
-            f"No default configuration found. Create cases/studies/<study_name>/{DEFAULT_CONFIG_NAME} "
+            f"No default configuration found. Create cases/<study_name>/{DEFAULT_CONFIG_NAME} "
             "or pass --config explicitly."
         )
 
@@ -57,7 +59,7 @@ def format_float(value: float) -> str:
 def slug_float(value: float) -> str:
     sign = "m" if value < 0.0 else ""
     text = f"{abs(value):.6g}"
-    return sign + text.replace(".", "p")
+    return sign + text.replace(".", "p").replace("+", "")
 
 
 def require(condition: bool, message: str) -> None:
@@ -83,10 +85,22 @@ def compute_grid_count(length: float, cell_size: float, axis_name: str) -> int:
     return int(rounded_count)
 
 
-def build_case_name(geometry_mode: str, top_boundary_velocity: float, spacing: float | None) -> str:
-    parts = [geometry_mode, f"vtop_{slug_float(top_boundary_velocity)}"]
+def build_case_name(
+    geometry_mode: str,
+    top_boundary_temperature_k: float,
+    top_boundary_number_density: float,
+    spacing: float | None,
+    extra_parts: list[str] | None = None,
+) -> str:
+    parts = [
+        geometry_mode,
+        f"ttop_{slug_float(top_boundary_temperature_k)}",
+        f"ntop_{slug_float(top_boundary_number_density)}",
+    ]
     if spacing is not None:
         parts.insert(1, f"dx_{slug_float(spacing)}")
+    if extra_parts:
+        parts.extend(extra_parts)
     return "_".join(parts)
 
 
@@ -385,7 +399,8 @@ def render_case_input(template_text: str, case: dict, geometry: dict) -> str:
         "__ZHI__": format_float(geometry["zhi"]),
         "__TWALL__": format_float(defaults["temperature_k"]),
         "__COEFF__": format_float(defaults["condensation_coefficient"]),
-        "__TOP_VY__": format_float(case["top_boundary_velocity"]),
+        "__TOP_TEMP__": format_float(case["top_boundary_temperature_k"]),
+        "__TOP_NRHO__": format_float(case["top_boundary_number_density"]),
         "__GRID_NX__": str(geometry["grid_nx"]),
         "__GRID_NY__": str(geometry["grid_ny"]),
         "__VAPOR_NRHO__": format_float(defaults["vapor_number_density"]),
@@ -432,7 +447,8 @@ def build_case_metadata(case_name: str, case: dict, geometry: dict) -> dict:
         "study_name": case["study_name"],
         "geometry_mode": case["geometry_mode"],
         "spacing": case.get("spacing"),
-        "top_boundary_velocity": case["top_boundary_velocity"],
+        "top_boundary_temperature_k": case["top_boundary_temperature_k"],
+        "top_boundary_number_density": case["top_boundary_number_density"],
         "temperature_k": defaults["temperature_k"],
         "radius": defaults["radius"],
         "contact_angle_deg": defaults["contact_angle_deg"],
@@ -470,9 +486,13 @@ def iter_cases(config: dict) -> list[dict]:
     defaults = config["defaults"]
     sweep = config["sweep"]
     cases_cfg = config["cases"]
-    velocities = sweep["top_boundary_velocity"]
+    top_temperatures = sweep["top_boundary_temperature_k"]
+    top_number_densities = sweep["top_boundary_number_density"]
     spacings = sweep["spacing"]
+    sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
     study_name = config["study_name"]
+
+    require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
 
     require(defaults["start_sampling_step"] >= 0, "start_sampling_step must be non-negative.")
     require(defaults["sampling_steps"] > 0, "sampling_steps must be positive.")
@@ -480,36 +500,64 @@ def iter_cases(config: dict) -> list[dict]:
     require((defaults["run_steps"] - defaults["start_sampling_step"]) % defaults["sampling_steps"] == 0,
             "run_steps - start_sampling_step must be divisible by sampling_steps.")
 
+    include_box_height_in_name = len(sweep_box_heights) > 1
+
     rows = []
     if cases_cfg.get("include_single_reference", True):
-        single_velocities = velocities if cases_cfg.get("single_reference_per_velocity", True) else [velocities[0]]
-        for velocity in single_velocities:
+        if cases_cfg.get("single_reference_per_boundary_state", True):
+            single_boundary_states = [
+                (top_temperature, top_number_density, box_height)
+                for top_temperature in top_temperatures
+                for top_number_density in top_number_densities
+                for box_height in sweep_box_heights
+            ]
+        else:
+            single_boundary_states = [(top_temperatures[0], top_number_densities[0], sweep_box_heights[0])]
+        for top_temperature, top_number_density, box_height in single_boundary_states:
+            case_defaults = dict(defaults)
+            case_defaults["box_height"] = box_height
             rows.append(
                 {
                     "study_name": study_name,
                     "geometry_mode": cases_cfg["single_geometry_mode"],
-                    "top_boundary_velocity": velocity,
+                    "top_boundary_temperature_k": top_temperature,
+                    "top_boundary_number_density": top_number_density,
                     "spacing": None,
-                    "defaults": defaults,
+                    "defaults": case_defaults,
+                    "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
                 }
             )
 
-    for velocity in velocities:
-        for spacing in spacings:
-            rows.append(
-                {
-                    "study_name": study_name,
-                    "geometry_mode": cases_cfg["multi_geometry_mode"],
-                    "top_boundary_velocity": velocity,
-                    "spacing": spacing,
-                    "defaults": defaults,
-                }
-            )
+    for top_temperature in top_temperatures:
+        for top_number_density in top_number_densities:
+            for box_height, spacing in itertools.product(sweep_box_heights, spacings):
+                case_defaults = dict(defaults)
+                case_defaults["box_height"] = box_height
+                rows.append(
+                    {
+                        "study_name": study_name,
+                        "geometry_mode": cases_cfg["multi_geometry_mode"],
+                        "top_boundary_temperature_k": top_temperature,
+                        "top_boundary_number_density": top_number_density,
+                        "spacing": spacing,
+                        "defaults": case_defaults,
+                        "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
+                    }
+                )
     return rows
 
 
 def write_manifest(study_dir: Path, rows: list[dict]) -> None:
-    fieldnames = ["case_name", "case_relpath", "geometry_mode", "top_boundary_velocity", "spacing", "droplet_count"]
+    fieldnames = [
+        "case_name",
+        "case_relpath",
+        "geometry_mode",
+        "top_boundary_temperature_k",
+        "top_boundary_number_density",
+        "box_height",
+        "spacing",
+        "droplet_count",
+    ]
     manifest_path = study_dir / "case_manifest.csv"
     with manifest_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -526,13 +574,19 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
     config = load_json(config_path)
     template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
     study_name = config["study_name"]
-    study_dir = STUDIES_DIR / study_name
+    study_dir = CASES_DIR / study_name
     study_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
 
     for case in iter_cases(config):
         geometry = build_geometry(case)
-        case_name = build_case_name(case["geometry_mode"], case["top_boundary_velocity"], case["spacing"])
+        case_name = build_case_name(
+            case["geometry_mode"],
+            case["top_boundary_temperature_k"],
+            case["top_boundary_number_density"],
+            case["spacing"],
+            case.get("name_suffix_parts"),
+        )
         case_dir = study_dir / case_name
         if case_dir.exists():
             if not force:
@@ -563,9 +617,11 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
         manifest_rows.append(
             {
                 "case_name": case_name,
-                "case_relpath": f"cases/studies/{study_name}/{case_name}",
+                "case_relpath": f"cases/{study_name}/{case_name}",
                 "geometry_mode": case["geometry_mode"],
-                "top_boundary_velocity": case["top_boundary_velocity"],
+                "top_boundary_temperature_k": case["top_boundary_temperature_k"],
+                "top_boundary_number_density": case["top_boundary_number_density"],
+                "box_height": case["defaults"]["box_height"],
                 "spacing": "" if case["spacing"] is None else case["spacing"],
                 "droplet_count": geometry["droplet_count"],
             }
@@ -584,7 +640,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help=f"Path to the JSON sweep configuration. Defaults to the only cases/studies/*/{DEFAULT_CONFIG_NAME} file if present.",
+        help=f"Path to the JSON sweep configuration. Defaults to the only cases/*/{DEFAULT_CONFIG_NAME} file if present.",
     )
     parser.add_argument("--force", action="store_true", help="Replace existing generated case directories.")
     return parser.parse_args()
@@ -594,7 +650,7 @@ def main() -> int:
     args = parse_args()
     config_path = resolve_config_path(args.config)
     config = load_json(config_path)
-    study_dir = STUDIES_DIR / config["study_name"]
+    study_dir = CASES_DIR / config["study_name"]
     rows = generate_cases(config_path, args.force)
     print(f"Generated {len(rows)} case directories under {study_dir}")
     print(f"Parameters: {config_path}")

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 cases_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-studies_dir="$cases_dir/studies"
+study_root="$(cd "$cases_dir/.." && pwd)"
 template_path="$cases_dir/_templates/parameters.json"
 
 if [[ $# -ne 1 ]]; then
@@ -12,7 +12,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 study_name="$1"
-study_dir="$studies_dir/$study_name"
+study_dir="$cases_dir/$study_name"
 parameters_path="$study_dir/parameters.json"
 
 if [[ ! "$study_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -36,4 +36,4 @@ sed "s/replace_with_study_name/$study_name/g" "$template_path" > "$parameters_pa
 
 echo "Initialized $study_dir"
 echo "Edit $parameters_path, then run:"
-echo "  python3 scripts/generate_cases.py --config cases/studies/$study_name/parameters.json --force"
+echo "  (cd \"$study_root\" && python3 scripts/generate_cases.py --config cases/$study_name/parameters.json --force)"

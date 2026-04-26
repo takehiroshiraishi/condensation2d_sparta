@@ -7,12 +7,12 @@ case_list="${1:-}"
 sparta_bin="${2:-${SPARTA_BIN:-../../src/spa_serial}}"
 
 if [[ -z "$case_list" ]]; then
-  mapfile -t matches < <(find "$study_root/cases/studies" -mindepth 2 -maxdepth 2 -name case_list.txt | sort)
+  mapfile -t matches < <(find "$study_root/cases" -mindepth 2 -maxdepth 2 -name case_list.txt ! -path "$study_root/cases/_templates/*" | sort)
   if [[ ${#matches[@]} -eq 1 ]]; then
     case_list="${matches[0]}"
   else
     echo "Usage: $0 CASE_LIST [SPARTA_BIN]" >&2
-    echo "Pass a study-specific case list under cases/studies/<study_name>/case_list.txt." >&2
+    echo "Pass a study-specific case list under cases/<study_name>/case_list.txt." >&2
     exit 1
   fi
 fi

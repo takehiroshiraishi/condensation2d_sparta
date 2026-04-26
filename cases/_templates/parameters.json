@@ -25,13 +25,16 @@
   },
   "cases": {
     "include_single_reference": true,
-    "single_reference_per_velocity": true,
+    "single_reference_per_boundary_state": true,
     "single_geometry_mode": "single_open_half",
     "multi_geometry_mode": "array_half"
   },
   "sweep": {
-    "top_boundary_velocity": [
-      -1.0
+    "top_boundary_temperature_k": [
+      330.0
+    ],
+    "top_boundary_number_density": [
+      3.8e24
     ],
     "spacing": [
       24.0e-6

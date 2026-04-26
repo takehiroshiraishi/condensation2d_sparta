@@ -6,7 +6,7 @@ This directory is the 2D analogue of `run/condensation`. It keeps the same study
 
 - `base/`: reusable template and shared species/VSS files
 - `cases/`: tracked bootstrap assets such as `init.sh` and `_templates/parameters.json`
-- `cases/studies/`: untracked generated study directories
+- `cases/<study_name>/`: untracked generated study directories
 - `scripts/`: case generation and run helpers
 - `post/`: post-processing and ParaView export helpers
 - `results/`: summary CSVs and plots
@@ -20,7 +20,7 @@ This directory is the 2D analogue of `run/condensation`. It keeps the same study
 
 This creates:
 
-- `cases/studies/my_study/parameters.json`
+- `cases/my_study/parameters.json`
 
 Edit that file, then generate cases from it.
 
@@ -32,20 +32,20 @@ Edit that file, then generate cases from it.
 In both modes:
 
 - `y=0` is the wall
-- `y=yhi` is the `outletv` top boundary
+- `y=yhi` is an open top boundary with a prescribed half-Maxwellian vapor source
 - the droplet is a 2D circular arc generated per case
 
 ## Generate Cases
 
 ```bash
-python3 scripts/generate_cases.py --config cases/studies/my_study/parameters.json --force
+python3 scripts/generate_cases.py --config cases/my_study/parameters.json --force
 ```
 
-If there is exactly one `cases/studies/*/parameters.json` file, `--config` is optional.
+If there is exactly one `cases/*/parameters.json` file, `--config` is optional.
 
 Generated cases live under:
 
-- `cases/studies/<study_name>/<case_name>/`
+- `cases/<study_name>/<case_name>/`
 
 Each case receives:
 
@@ -59,33 +59,33 @@ Each case receives:
 
 The generator also refreshes:
 
-- `cases/studies/<study_name>/run.sh`
-- `cases/studies/<study_name>/case_manifest.csv`
-- `cases/studies/<study_name>/case_list.txt`
+- `cases/<study_name>/run.sh`
+- `cases/<study_name>/case_manifest.csv`
+- `cases/<study_name>/case_list.txt`
 
 ## Run One Case
 
 ```bash
-scripts/run_case.sh cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1 ../../src/spa_serial
+scripts/run_case.sh cases/neighbor_condensation_2d/single_open_half_vtop_m1 ../../src/spa_serial
 ```
 
 MPI example:
 
 ```bash
-SPARTA_LAUNCH="mpirun -np 4" scripts/run_case.sh cases/studies/neighbor_condensation_2d/array_half_dx_8e-06_vtop_m1 ../../src/spa_mpi
+SPARTA_LAUNCH="mpirun -np 4" scripts/run_case.sh cases/neighbor_condensation_2d/array_half_dx_8e-06_vtop_m1 ../../src/spa_mpi
 ```
 
 Per-case Slurm launcher:
 
 ```bash
-cd cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
+cd cases/neighbor_condensation_2d/single_open_half_vtop_m1
 sbatch run_single.sh
 ```
 
 Study-level submit helper:
 
 ```bash
-cd cases/studies/my_study
+cd cases/my_study
 ./run.sh
 ```
 
@@ -102,7 +102,7 @@ For HPC use, the cleanest setup is usually one shared `spa_mpi` at `run/condensa
 ## Run a Sweep
 
 ```bash
-scripts/run_sweep.sh cases/studies/my_study/case_list.txt ../../src/spa_serial
+scripts/run_sweep.sh cases/my_study/case_list.txt ../../src/spa_serial
 ```
 
 The Slurm array template is:
@@ -121,7 +121,8 @@ scripts/sync_from_hpc.sh user@hpc:/path/to/condensation2d
 This syncs:
 
 - remote `cases/studies/neighbor_condensation_2d/`
-- into local `cases/studies/neighbor_condensation_2d/`
+- remote `cases/neighbor_condensation_2d/`
+- into local `cases/neighbor_condensation_2d/`
 
 It intentionally does not use `rsync --delete`, so local files created only on
 your machine are preserved.
@@ -152,15 +153,15 @@ The 2D condensation metrics are interpreted per unit out-of-plane depth.
 Last frame only:
 
 ```bash
-python3 post/export_paraview_vtk.py cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
-paraview cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1/grid_steady_legacy.vtk
+python3 post/export_paraview_vtk.py cases/neighbor_condensation_2d/single_open_half_vtop_m1
+paraview cases/neighbor_condensation_2d/single_open_half_vtop_m1/grid_steady_legacy.vtk
 ```
 
 Time series:
 
 ```bash
-python3 post/export_paraview_vtk.py --mode all cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1
-paraview cases/studies/neighbor_condensation_2d/single_open_half_vtop_m1/vtk_series/grid_steady/grid_steady.pvd
+python3 post/export_paraview_vtk.py --mode all cases/neighbor_condensation_2d/single_open_half_vtop_m1
+paraview cases/neighbor_condensation_2d/single_open_half_vtop_m1/vtk_series/grid_steady/grid_steady.pvd
 ```
 
 The centerline export is:
@@ -171,7 +172,7 @@ The centerline export is:
 ## Which Files To Edit
 
 - Run `./cases/init.sh <study_name>` to create a new study from `cases/_templates/parameters.json`.
-- Edit `cases/studies/<study_name>/parameters.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
+- Edit `cases/<study_name>/parameters.json` to change the sweep, `cell_size`, droplet radius, contact angle, run length, and output cadence.
 - Edit `base/in.condensation.template` to change the SPARTA calculation itself.
 - Edit `scripts/generate_cases.py` to change geometry generation, case naming, symmetry logic, or diagnostics.
 - Edit `post/process_results.py` to change derived metrics, normalization, CSV columns, or plots.
@@ -180,10 +181,10 @@ The centerline export is:
 ## Notes and Assumptions
 
 - The droplet surface is a generated 2D circular arc, not a closed circle and not a 3D projection.
-- The boundary-condition logic matches the current 3D study setup:
+- The boundary-condition logic matches the current 2D study setup:
   - droplet emits via `emit/surf`
   - droplet uses `evapref`
-  - top boundary uses `outletv`
+  - top boundary uses `emit/face` with prescribed temperature and number density plus `vanish`
 - The grid is controlled by a single isotropic `cell_size`. The generator requires each domain length to be an integer multiple of `cell_size`.
 - Surface quantities from `dump surf` are line-based in 2D, so the reported condensation metrics are per unit out-of-plane depth.
 - `single_open_half` reconstructs full-droplet metrics with a symmetry multiplier of 2.
