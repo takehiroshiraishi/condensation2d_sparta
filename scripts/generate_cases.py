@@ -321,6 +321,38 @@ def render_study_run_script() -> str:
     )
 
 
+def render_study_profiles_script() -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "",
+            "set -euo pipefail",
+            "",
+            'study_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+            'study_root="$(cd "$study_dir/../.." && pwd)"',
+            'case_list="$study_dir/case_list.txt"',
+            "",
+            'if [[ ! -f "$case_list" ]]; then',
+            '  echo "Case list not found: $case_list" >&2',
+            "  exit 1",
+            "fi",
+            "",
+            'while IFS= read -r case_relpath; do',
+            '  [[ -z "$case_relpath" ]] && continue',
+            '  case_dir="$study_dir/$(basename "$case_relpath")"',
+            '  if [[ ! -d "$case_dir" ]]; then',
+            '    echo "Missing case directory: $case_dir" >&2',
+            "    exit 1",
+            "  fi",
+            '  echo "Converting steady outputs to VTK for $case_dir"',
+            '  python3 "$study_root/post/export_paraview_vtk.py" --mode all "$case_dir"',
+            '  echo "Plotting steady profiles for $case_dir"',
+            '  python3 "$study_root/post/plot_steady_profiles.py" "$case_dir"',
+            'done < "$case_list"',
+        ]
+    )
+
+
 def build_geometry(case: dict) -> dict:
     defaults = case["defaults"]
     geometry_mode = case["geometry_mode"]
@@ -627,6 +659,9 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
     run_script_path = study_dir / "run.sh"
     run_script_path.write_text(render_study_run_script() + "\n", encoding="utf-8")
     run_script_path.chmod(0o755)
+    profiles_script_path = study_dir / "plot_profiles.sh"
+    profiles_script_path.write_text(render_study_profiles_script() + "\n", encoding="utf-8")
+    profiles_script_path.chmod(0o755)
     return manifest_rows
 
 
