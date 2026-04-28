@@ -16,12 +16,18 @@ def load_json(path: Path) -> dict:
         return json.load(handle)
 
 
-def latest_vtr_path(case_dir: Path) -> Path:
+def averaging_vtr_paths(case_dir: Path) -> list[Path]:
     vtr_dir = case_dir / "vtk_series" / "grid_steady"
     candidates = sorted(vtr_dir.glob("grid_steady_*.vtr"))
     if not candidates:
         raise FileNotFoundError(f"No grid_steady_*.vtr files found in {vtr_dir}")
-    return candidates[-1]
+
+    nonzero_candidates = [path for path in candidates if path.stem != "grid_steady_0000000000"]
+    if not nonzero_candidates:
+        return candidates[-1:]
+    if len(nonzero_candidates) == 1:
+        return nonzero_candidates
+    return nonzero_candidates[1:]
 
 
 def parse_data_array(piece: ET.Element, name: str) -> np.ndarray:
@@ -60,6 +66,22 @@ def load_rectilinear_grid(vtr_path: Path) -> dict:
         "z_centers": z_centers,
         "temp": temp,
         "press": press,
+    }
+
+
+def load_averaged_rectilinear_grid(vtr_paths: list[Path]) -> dict:
+    grids = [load_rectilinear_grid(path) for path in vtr_paths]
+    reference = grids[0]
+
+    avg_temp = np.mean([grid["temp"] for grid in grids], axis=0)
+    avg_press = np.mean([grid["press"] for grid in grids], axis=0)
+
+    return {
+        "x_centers": reference["x_centers"],
+        "y_centers": reference["y_centers"],
+        "z_centers": reference["z_centers"],
+        "temp": avg_temp,
+        "press": avg_press,
     }
 
 
@@ -139,7 +161,7 @@ def write_profile_table(path: Path, distance: np.ndarray, temperature: np.ndarra
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot steady-state temperature/pressure profiles from the latest condensation2d VTK frame.")
+    parser = argparse.ArgumentParser(description="Plot steady-state temperature/pressure profiles from the averaged condensation2d VTK frames.")
     parser.add_argument("case_dir", type=Path, help="Case directory, e.g. run/condensation2d/cases/.../v330K")
     parser.add_argument("--output-dir", default="profiles_steady", help="Output directory relative to the case dir")
     return parser.parse_args()
@@ -155,8 +177,8 @@ def main() -> int:
         legacy_combined_path.unlink()
 
     metadata = load_json(case_dir / "metadata.json")
-    vtr_path = latest_vtr_path(case_dir)
-    grid = load_rectilinear_grid(vtr_path)
+    vtr_paths = averaging_vtr_paths(case_dir)
+    grid = load_averaged_rectilinear_grid(vtr_paths)
     table = build_cell_table(grid)
 
     x_center, y_center = droplet_center(metadata)
@@ -177,7 +199,9 @@ def main() -> int:
         distance, temperature, pressure = values
         write_profile_table(output_dir / f"{name}.dat", distance, temperature, pressure)
 
-    print(f"Read steady frame: {vtr_path}")
+    print(f"Averaged steady frames: {len(vtr_paths)}")
+    print(f"First averaged frame: {vtr_paths[0]}")
+    print(f"Last averaged frame: {vtr_paths[-1]}")
     print(f"Droplet center used: x={x_center:.12g}, y={y_center:.12g}")
     for name in profiles:
         print(f"Wrote profile table to: {output_dir / f'{name}.dat'}")
