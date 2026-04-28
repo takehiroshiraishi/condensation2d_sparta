@@ -72,6 +72,13 @@ def droplet_center(metadata: dict) -> tuple[float, float]:
     return x_center, y_center
 
 
+def surface_point(x0: float, y0: float, radius: float, direction_x: float, direction_y: float) -> tuple[float, float]:
+    norm = math.hypot(direction_x, direction_y)
+    if norm == 0.0:
+        raise ValueError("Surface direction must be non-zero.")
+    return x0 + radius * direction_x / norm, y0 + radius * direction_y / norm
+
+
 def build_cell_table(grid: dict) -> np.ndarray:
     x_centers = grid["x_centers"]
     y_centers = grid["y_centers"]
@@ -97,17 +104,19 @@ def build_cell_table(grid: dict) -> np.ndarray:
 
 def select_axis_x(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     yline = table["y"][np.argmin(np.abs(table["y"] - y0))]
-    mask = (np.abs(table["y"] - yline) <= 0.25 * dy) & (table["x"] >= x0 - 0.5 * dx)
+    x_surface = x0
+    mask = (np.abs(table["y"] - yline) <= 0.25 * dy) & (table["x"] >= x_surface - 0.5 * dx)
     rows = np.sort(table[mask], order="x")
-    s = rows["x"] - x0
+    s = rows["x"] - x_surface
     return s, rows["temp"], rows["press"]
 
 
 def select_axis_y(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     xline = table["x"][np.argmin(np.abs(table["x"] - x0))]
-    mask = (np.abs(table["x"] - xline) <= 0.25 * dx) & (table["y"] >= y0 - 0.5 * dy)
+    y_surface = y0
+    mask = (np.abs(table["x"] - xline) <= 0.25 * dx) & (table["y"] >= y_surface - 0.5 * dy)
     rows = np.sort(table[mask], order="y")
-    s = rows["y"] - y0
+    s = rows["y"] - y_surface
     return s, rows["temp"], rows["press"]
 
 
@@ -150,14 +159,18 @@ def main() -> int:
     grid = load_rectilinear_grid(vtr_path)
     table = build_cell_table(grid)
 
-    x0, y0 = droplet_center(metadata)
+    x_center, y_center = droplet_center(metadata)
+    radius = metadata["radius"]
+    x0_x, y0_x = surface_point(x_center, y_center, radius, 1.0, 0.0)
+    x0_y, y0_y = surface_point(x_center, y_center, radius, 0.0, 1.0)
+    x0_diag, y0_diag = surface_point(x_center, y_center, radius, 1.0, 1.0)
     dx = float(grid["x_centers"][1] - grid["x_centers"][0]) if len(grid["x_centers"]) > 1 else 1.0
     dy = float(grid["y_centers"][1] - grid["y_centers"][0]) if len(grid["y_centers"]) > 1 else 1.0
 
     profiles = {
-        "x_axis": select_axis_x(table, x0, y0, dx, dy),
-        "y_axis": select_axis_y(table, x0, y0, dx, dy),
-        "diag_45deg": select_axis_diag45(table, x0, y0, dx, dy),
+        "x_axis": select_axis_x(table, x0_x, y0_x, dx, dy),
+        "y_axis": select_axis_y(table, x0_y, y0_y, dx, dy),
+        "diag_45deg": select_axis_diag45(table, x0_diag, y0_diag, dx, dy),
     }
 
     for name, values in profiles.items():
@@ -165,7 +178,7 @@ def main() -> int:
         write_profile_table(output_dir / f"{name}.dat", distance, temperature, pressure)
 
     print(f"Read steady frame: {vtr_path}")
-    print(f"Droplet center used: x={x0:.12g}, y={y0:.12g}")
+    print(f"Droplet center used: x={x_center:.12g}, y={y_center:.12g}")
     for name in profiles:
         print(f"Wrote profile table to: {output_dir / f'{name}.dat'}")
     return 0
