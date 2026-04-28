@@ -187,10 +187,10 @@ def render_centerline_section(defaults: dict, geometry: dict) -> str:
     return "\n".join(
         [
             "# Time-averaged centerline fields in a thin band around x = 0.",
-            "# f_centerline_avg columns are: nrho u v temp press.",
+            "# f_centerline_avg columns are: nrho u v trot temp press.",
             f"region              xline block {format_float(line_xlo)} {format_float(line_xhi)} INF INF INF INF",
             "group               centerline grid region xline center",
-            "compute             centerline_flow grid centerline water nrho u v",
+            "compute             centerline_flow grid centerline water nrho u v trot",
             "compute             centerline_thermo thermal/grid centerline water temp press",
             f"fix                 centerline_avg ave/grid centerline 1 {dump_every} {dump_every} &",
             "                    c_centerline_flow[*] c_centerline_thermo[*] ave one",
@@ -204,8 +204,8 @@ def render_full_grid_section(defaults: dict) -> str:
     return "\n".join(
         [
             "# Time-averaged whole-domain grid fields for steady-state inspection.",
-            "# f_grid_avg columns are: nrho u v temp press.",
-            "compute             grid_flow grid all water nrho u v",
+            "# f_grid_avg columns are: nrho u v trot temp press.",
+            "compute             grid_flow grid all water nrho u v trot",
             "compute             grid_thermo thermal/grid all water temp press",
             f"fix                 grid_avg ave/grid all 1 {dump_every} {dump_every} &",
             "                    c_grid_flow[*] c_grid_thermo[*] ave one",

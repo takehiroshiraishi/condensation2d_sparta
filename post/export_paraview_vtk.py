@@ -66,10 +66,10 @@ def build_frame(raw_frame: dict, metadata: dict) -> dict:
     row_map = {(row["xc"], row["yc"], row["zc"]): row for row in rows}
     ordered_rows = [row_map[(x, y, z)] for z, y, x in product(z_centers, y_centers, x_centers)]
 
-    source_fields = [name for name in ("f_grid_avg[1]", "f_grid_avg[2]", "f_grid_avg[3]", "f_grid_avg[4]", "f_grid_avg[5]") if name in ordered_rows[0]]
+    source_fields = [name for name in ("f_grid_avg[1]", "f_grid_avg[2]", "f_grid_avg[3]", "f_grid_avg[4]", "f_grid_avg[5]", "f_grid_avg[6]") if name in ordered_rows[0]]
     if not source_fields:
-        source_fields = [name for name in ("f_centerline_avg[1]", "f_centerline_avg[2]", "f_centerline_avg[3]", "f_centerline_avg[4]", "f_centerline_avg[5]") if name in ordered_rows[0]]
-    target_fields = ("nrho", "u", "v", "temp", "press")
+        source_fields = [name for name in ("f_centerline_avg[1]", "f_centerline_avg[2]", "f_centerline_avg[3]", "f_centerline_avg[4]", "f_centerline_avg[5]", "f_centerline_avg[6]") if name in ordered_rows[0]]
+    target_fields = ("nrho", "u", "v", "trot", "temp", "press")
     for source_name, target_name in zip(source_fields, target_fields):
         for row in ordered_rows:
             row[target_name] = row[source_name]
@@ -98,7 +98,7 @@ def write_legacy_vtk(path: Path, frame: dict) -> None:
             handle.write(f"{axis_name}_COORDINATES {len(values)} float\n")
             handle.write(" ".join(f"{value:.12g}" for value in values) + "\n")
         handle.write(f"CELL_DATA {len(frame['ordered_rows'])}\n")
-        for field_name in ("nrho", "temp", "press"):
+        for field_name in ("nrho", "trot", "temp", "press"):
             handle.write(f"SCALARS {field_name} float 1\nLOOKUP_TABLE default\n")
             for row in frame["ordered_rows"]:
                 handle.write(f"{row.get(field_name, 0.0):.12g}\n")
@@ -115,7 +115,7 @@ def write_vtr(path: Path, frame: dict) -> None:
         handle.write(f'  <RectilinearGrid WholeExtent="{whole_extent}">\n')
         handle.write(f'    <Piece Extent="{whole_extent}">\n')
         handle.write("      <CellData>\n")
-        for field_name in ("nrho", "temp", "press"):
+        for field_name in ("nrho", "trot", "temp", "press"):
             handle.write(f'      <DataArray type="Float64" Name="{field_name}" format="ascii">\n')
             handle.write("        " + " ".join(f"{row.get(field_name, 0.0):.12g}" for row in frame["ordered_rows"]) + "\n")
             handle.write("      </DataArray>\n")
