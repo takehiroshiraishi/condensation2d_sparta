@@ -24,6 +24,10 @@ This creates:
 
 Edit that file, then generate cases from it. The study name is taken from the directory name `cases/<study_name>/`, not from a JSON field.
 
+By default, `sweep.top_boundary_temperature_k` and `sweep.top_boundary_number_density`
+are paired element-by-element. Set `cases.boundary_state_mode` to `cartesian` if you
+want the full combination of both lists instead.
+
 ## Implemented Geometry Modes
 
 - `single_open_half`: half-domain single-droplet reference with symmetry at `x=0` and an open outer boundary at `x=xhi`

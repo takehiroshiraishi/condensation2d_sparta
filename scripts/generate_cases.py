@@ -518,6 +518,30 @@ def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: d
     }
 
 
+def boundary_state_pairs(cases_cfg: dict, top_temperatures: list[float], top_number_densities: list[float]) -> list[tuple[float, float]]:
+    mode = cases_cfg.get("boundary_state_mode", "paired")
+
+    if mode == "cartesian":
+        return [(top_temperature, top_number_density)
+                for top_temperature in top_temperatures
+                for top_number_density in top_number_densities]
+
+    if mode != "paired":
+        raise ValueError(f"Unsupported boundary_state_mode: {mode}")
+
+    if len(top_temperatures) == len(top_number_densities):
+        return list(zip(top_temperatures, top_number_densities))
+    if len(top_temperatures) == 1:
+        return [(top_temperatures[0], top_number_density) for top_number_density in top_number_densities]
+    if len(top_number_densities) == 1:
+        return [(top_temperature, top_number_densities[0]) for top_temperature in top_temperatures]
+
+    raise ValueError(
+        "For boundary_state_mode='paired', top_boundary_temperature_k and "
+        "top_boundary_number_density must have the same length, or one list must have length 1."
+    )
+
+
 def iter_cases(config: dict) -> list[dict]:
     defaults = config["defaults"]
     sweep = config["sweep"]
@@ -526,6 +550,7 @@ def iter_cases(config: dict) -> list[dict]:
     top_number_densities = sweep["top_boundary_number_density"]
     spacings = sweep["spacing"]
     sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
+    top_boundary_states = boundary_state_pairs(cases_cfg, top_temperatures, top_number_densities)
     require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
 
     require(defaults["start_sampling_step"] >= 0, "start_sampling_step must be non-negative.")
@@ -541,12 +566,12 @@ def iter_cases(config: dict) -> list[dict]:
         if cases_cfg.get("single_reference_per_boundary_state", True):
             single_boundary_states = [
                 (top_temperature, top_number_density, box_height)
-                for top_temperature in top_temperatures
-                for top_number_density in top_number_densities
+                for top_temperature, top_number_density in top_boundary_states
                 for box_height in sweep_box_heights
             ]
         else:
-            single_boundary_states = [(top_temperatures[0], top_number_densities[0], sweep_box_heights[0])]
+            first_top_temperature, first_top_number_density = top_boundary_states[0]
+            single_boundary_states = [(first_top_temperature, first_top_number_density, sweep_box_heights[0])]
         for top_temperature, top_number_density, box_height in single_boundary_states:
             case_defaults = dict(defaults)
             case_defaults["box_height"] = box_height
@@ -561,21 +586,20 @@ def iter_cases(config: dict) -> list[dict]:
                 }
             )
 
-    for top_temperature in top_temperatures:
-        for top_number_density in top_number_densities:
-            for box_height, spacing in itertools.product(sweep_box_heights, spacings):
-                case_defaults = dict(defaults)
-                case_defaults["box_height"] = box_height
-                rows.append(
-                    {
-                        "geometry_mode": cases_cfg["multi_geometry_mode"],
-                        "top_boundary_temperature_k": top_temperature,
-                        "top_boundary_number_density": top_number_density,
-                        "spacing": spacing,
-                        "defaults": case_defaults,
-                        "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
-                    }
-                )
+    for top_temperature, top_number_density in top_boundary_states:
+        for box_height, spacing in itertools.product(sweep_box_heights, spacings):
+            case_defaults = dict(defaults)
+            case_defaults["box_height"] = box_height
+            rows.append(
+                {
+                    "geometry_mode": cases_cfg["multi_geometry_mode"],
+                    "top_boundary_temperature_k": top_temperature,
+                    "top_boundary_number_density": top_number_density,
+                    "spacing": spacing,
+                    "defaults": case_defaults,
+                    "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
+                }
+            )
     return rows
 
 

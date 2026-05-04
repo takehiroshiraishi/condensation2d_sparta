@@ -24,6 +24,7 @@
   },
   "cases": {
     "include_single_reference": false,
+    "boundary_state_mode": "paired",
     "single_reference_per_boundary_state": true,
     "single_geometry_mode": "single_open_half",
     "multi_geometry_mode": "array_half"
