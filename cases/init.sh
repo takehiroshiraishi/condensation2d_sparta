@@ -41,23 +41,6 @@ fi
 
 mkdir -p "$study_dir"
 cp "$parameters_template_path" "$parameters_path"
-python3 - "$parameters_path" "$study_name" <<'EOF'
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-study_name = sys.argv[2]
-
-with path.open("r", encoding="utf-8") as handle:
-    data = json.load(handle)
-
-data["study_name"] = study_name
-
-with path.open("w", encoding="utf-8") as handle:
-    json.dump(data, handle, indent=2, sort_keys=False)
-    handle.write("\n")
-EOF
 cp "$plot_template_path" "$plot_script_path"
 cat > "$generate_script_path" <<EOF
 #!/usr/bin/env bash

@@ -52,6 +52,14 @@ def resolve_config_path(config_arg: Path | None) -> Path:
     )
 
 
+def study_name_from_config_path(config_path: Path) -> str:
+    if config_path.name != DEFAULT_CONFIG_NAME:
+        raise ValueError(f"Expected config file named {DEFAULT_CONFIG_NAME}: {config_path}")
+    if config_path.parent == CASES_DIR or config_path.parent.name == "_templates":
+        raise ValueError(f"Config file must live under cases/<study_name>/: {config_path}")
+    return config_path.parent.name
+
+
 def format_float(value: float) -> str:
     return f"{value:.12g}"
 
@@ -455,7 +463,7 @@ def render_case_input(template_text: str, case: dict, geometry: dict) -> str:
     return rendered
 
 
-def build_case_metadata(case_name: str, case: dict, geometry: dict) -> dict:
+def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: dict) -> dict:
     defaults = case["defaults"]
     full_arc_length = circular_cap_arc_length(defaults["radius"], defaults["contact_angle_deg"])
     droplets = []
@@ -472,7 +480,7 @@ def build_case_metadata(case_name: str, case: dict, geometry: dict) -> dict:
 
     return {
         "case_name": case_name,
-        "study_name": case["study_name"],
+        "study_name": study_name,
         "geometry_mode": case["geometry_mode"],
         "spacing": case.get("spacing"),
         "top_boundary_temperature_k": case["top_boundary_temperature_k"],
@@ -518,8 +526,6 @@ def iter_cases(config: dict) -> list[dict]:
     top_number_densities = sweep["top_boundary_number_density"]
     spacings = sweep["spacing"]
     sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
-    study_name = config["study_name"]
-
     require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
 
     require(defaults["start_sampling_step"] >= 0, "start_sampling_step must be non-negative.")
@@ -546,7 +552,6 @@ def iter_cases(config: dict) -> list[dict]:
             case_defaults["box_height"] = box_height
             rows.append(
                 {
-                    "study_name": study_name,
                     "geometry_mode": cases_cfg["single_geometry_mode"],
                     "top_boundary_temperature_k": top_temperature,
                     "top_boundary_number_density": top_number_density,
@@ -563,7 +568,6 @@ def iter_cases(config: dict) -> list[dict]:
                 case_defaults["box_height"] = box_height
                 rows.append(
                     {
-                        "study_name": study_name,
                         "geometry_mode": cases_cfg["multi_geometry_mode"],
                         "top_boundary_temperature_k": top_temperature,
                         "top_boundary_number_density": top_number_density,
@@ -601,7 +605,7 @@ def write_manifest(study_dir: Path, rows: list[dict]) -> None:
 def generate_cases(config_path: Path, force: bool) -> list[dict]:
     config = load_json(config_path)
     template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
-    study_name = config["study_name"]
+    study_name = study_name_from_config_path(config_path)
     study_dir = CASES_DIR / study_name
     study_dir.mkdir(parents=True, exist_ok=True)
     manifest_rows = []
@@ -636,7 +640,7 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
             case["defaults"]["droplet_arc_segments"],
         )
 
-        metadata = build_case_metadata(case_name, case, geometry)
+        metadata = build_case_metadata(case_name, study_name, case, geometry)
         dump_json(case_dir / "metadata.json", metadata)
 
         for asset_name in ASSET_FILES:
@@ -680,8 +684,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     config_path = resolve_config_path(args.config)
-    config = load_json(config_path)
-    study_dir = CASES_DIR / config["study_name"]
+    study_dir = CASES_DIR / study_name_from_config_path(config_path)
     rows = generate_cases(config_path, args.force)
     print(f"Generated {len(rows)} case directories under {study_dir}")
     print(f"Parameters: {config_path}")

@@ -1,5 +1,4 @@
 {
-  "study_name": "domainstudy310K",
   "defaults": {
     "seed": 12345,
     "gridcut": 0.1,

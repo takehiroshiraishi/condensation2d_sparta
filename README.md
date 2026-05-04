@@ -22,7 +22,7 @@ This creates:
 
 - `cases/my_study/parameters.json`
 
-Edit that file, then generate cases from it.
+Edit that file, then generate cases from it. The study name is taken from the directory name `cases/<study_name>/`, not from a JSON field.
 
 ## Implemented Geometry Modes
 
