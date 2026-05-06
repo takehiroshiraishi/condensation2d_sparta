@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from pathlib import Path
 
@@ -106,7 +105,7 @@ def summarize_case(case_dir: Path) -> dict[str, object]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize study pressure and condensation mass flux metrics.")
     parser.add_argument("study_dir", type=Path, help="Study directory under cases/")
-    parser.add_argument("--output", default="condensation_flux_summary.csv", help="Output filename within the study directory")
+    parser.add_argument("--output", default="condensation_flux_summary.dat", help="Output filename within the study directory")
     return parser.parse_args()
 
 
@@ -134,11 +133,10 @@ def main() -> int:
         "mass_flux_per_wall_length",
         "mass_flux_per_surface_length",
     ]
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write(" ".join(fieldnames) + "\n")
         for row in rows:
-            writer.writerow(row)
+            handle.write(" ".join(str(row[field]) for field in fieldnames) + "\n")
 
     print(f"Wrote {output_path}")
     return 0
