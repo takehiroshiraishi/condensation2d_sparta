@@ -552,8 +552,10 @@ def iter_cases(config: dict) -> list[dict]:
     top_temperatures = sweep["top_boundary_temperature_k"]
     top_number_densities = sweep["top_boundary_number_density"]
     spacings = sweep["spacing"]
+    sweep_radii = sweep.get("radius", [defaults.get("radius")])
     sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
     top_boundary_states = boundary_state_pairs(cases_cfg, top_temperatures, top_number_densities)
+    require(all(radius is not None for radius in sweep_radii), "radius must be provided in defaults or sweep.")
     require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
 
     require(defaults["start_sampling_step"] >= 0, "start_sampling_step must be non-negative.")
@@ -562,22 +564,30 @@ def iter_cases(config: dict) -> list[dict]:
     require((defaults["run_steps"] - defaults["start_sampling_step"]) % defaults["sampling_steps"] == 0,
             "run_steps - start_sampling_step must be divisible by sampling_steps.")
 
+    include_radius_in_name = len(sweep_radii) > 1
     include_box_height_in_name = len(sweep_box_heights) > 1
 
     rows = []
     if cases_cfg.get("include_single_reference", True):
         if cases_cfg.get("single_reference_per_boundary_state", True):
             single_boundary_states = [
-                (top_temperature, top_number_density, box_height)
+                (top_temperature, top_number_density, radius, box_height)
                 for top_temperature, top_number_density in top_boundary_states
+                for radius in sweep_radii
                 for box_height in sweep_box_heights
             ]
         else:
             first_top_temperature, first_top_number_density = top_boundary_states[0]
-            single_boundary_states = [(first_top_temperature, first_top_number_density, sweep_box_heights[0])]
-        for top_temperature, top_number_density, box_height in single_boundary_states:
+            single_boundary_states = [(first_top_temperature, first_top_number_density, sweep_radii[0], sweep_box_heights[0])]
+        for top_temperature, top_number_density, radius, box_height in single_boundary_states:
             case_defaults = dict(defaults)
+            case_defaults["radius"] = radius
             case_defaults["box_height"] = box_height
+            name_suffix_parts = []
+            if include_radius_in_name:
+                name_suffix_parts.append(f"r_{slug_float(radius)}")
+            if include_box_height_in_name:
+                name_suffix_parts.append(f"hbox_{slug_float(box_height)}")
             rows.append(
                 {
                     "geometry_mode": cases_cfg["single_geometry_mode"],
@@ -585,14 +595,20 @@ def iter_cases(config: dict) -> list[dict]:
                     "top_boundary_number_density": top_number_density,
                     "spacing": None,
                     "defaults": case_defaults,
-                    "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
+                    "name_suffix_parts": name_suffix_parts,
                 }
             )
 
     for top_temperature, top_number_density in top_boundary_states:
-        for box_height, spacing in itertools.product(sweep_box_heights, spacings):
+        for radius, box_height, spacing in itertools.product(sweep_radii, sweep_box_heights, spacings):
             case_defaults = dict(defaults)
+            case_defaults["radius"] = radius
             case_defaults["box_height"] = box_height
+            name_suffix_parts = []
+            if include_radius_in_name:
+                name_suffix_parts.append(f"r_{slug_float(radius)}")
+            if include_box_height_in_name:
+                name_suffix_parts.append(f"hbox_{slug_float(box_height)}")
             rows.append(
                 {
                     "geometry_mode": cases_cfg["multi_geometry_mode"],
@@ -600,7 +616,7 @@ def iter_cases(config: dict) -> list[dict]:
                     "top_boundary_number_density": top_number_density,
                     "spacing": spacing,
                     "defaults": case_defaults,
-                    "name_suffix_parts": [f"hbox_{slug_float(box_height)}"] if include_box_height_in_name else [],
+                    "name_suffix_parts": name_suffix_parts,
                 }
             )
     return rows
@@ -613,6 +629,7 @@ def write_manifest(study_dir: Path, rows: list[dict]) -> None:
         "geometry_mode",
         "top_boundary_temperature_k",
         "top_boundary_number_density",
+        "radius",
         "box_height",
         "spacing",
         "droplet_count",
@@ -680,6 +697,7 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
                 "geometry_mode": case["geometry_mode"],
                 "top_boundary_temperature_k": case["top_boundary_temperature_k"],
                 "top_boundary_number_density": case["top_boundary_number_density"],
+                "radius": case["defaults"]["radius"],
                 "box_height": case["defaults"]["box_height"],
                 "spacing": "" if case["spacing"] is None else case["spacing"],
                 "droplet_count": geometry["droplet_count"],
