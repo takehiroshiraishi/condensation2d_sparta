@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
 TARGET_Y = 300.0e-6
+BOLTZMANN = 1.380649e-23
+UNIVERSAL_GAS_CONSTANT = 8.31446261815324
+H2O_MOLAR_MASS = 0.01801528
+H2O_SPECIFIC_GAS_CONSTANT = UNIVERSAL_GAS_CONSTANT / H2O_MOLAR_MASS
+OMEGA = 32.0 * math.pi / (32.0 + 9.0 * math.pi)
 
 
 def load_json(path: Path) -> dict:
@@ -68,13 +74,19 @@ def pressure_at_target_y(path: Path, target_y: float) -> float:
     return best_pressure
 
 
-def summarize_case(case_dir: Path) -> dict[str, object]:
+def summarize_case(case_dir: Path, study_defaults: dict[str, float]) -> dict[str, object]:
     metadata = load_json(case_dir / "metadata.json")
     y_axis_path = case_dir / "profiles_steady" / "y_axis.dat"
     if not y_axis_path.exists():
         raise FileNotFoundError(f"Missing profile file: {y_axis_path}")
 
     pressure = pressure_at_target_y(y_axis_path, TARGET_Y)
+    equilibrium_pressure = metadata["top_boundary_number_density"] * BOLTZMANN * metadata["top_boundary_temperature_k"]
+    liquid_temperature = metadata["temperature_k"]
+    condensation_coefficient = metadata["condensation_coefficient"]
+    vapor_number_density = study_defaults["vapor_number_density"]
+    saturation_pressure = vapor_number_density * BOLTZMANN * liquid_temperature
+    xhi = metadata["simulation_bounds"]["xhi"]
     full_domain_width = 2.0 * metadata["simulation_bounds"]["xhi"]
 
     total_mass_rate = 0.0
@@ -92,13 +104,26 @@ def summarize_case(case_dir: Path) -> dict[str, object]:
 
     flux_per_wall_length = total_mass_rate / full_domain_width if full_domain_width else 0.0
     flux_per_surface_length = total_mass_rate / total_surface_length if total_surface_length else 0.0
+    kinetic_prefactor = OMEGA * condensation_coefficient / (
+        condensation_coefficient + (1.0 - condensation_coefficient) * OMEGA
+    )
+    reference_flux = kinetic_prefactor * (pressure - saturation_pressure) / math.sqrt(
+        2.0 * math.pi * H2O_SPECIFIC_GAS_CONSTANT * liquid_temperature
+    )
+    normalized_flux_per_wall_length = flux_per_wall_length / reference_flux if reference_flux else 0.0
+    normalized_flux_per_surface_length = flux_per_surface_length / reference_flux if reference_flux else 0.0
 
     return {
         "case_name": metadata["case_name"],
+        "equilibrium_pressure_Pa": equilibrium_pressure,
+        "xhi_m": xhi,
         "pressure_at_y_300um_Pa": pressure,
+        "reference_flux_model": reference_flux,
         "domain_width_m": full_domain_width,
         "mass_flux_per_wall_length": flux_per_wall_length,
         "mass_flux_per_surface_length": flux_per_surface_length,
+        "normalized_flux_per_wall_length": normalized_flux_per_wall_length,
+        "normalized_flux_per_surface_length": normalized_flux_per_surface_length,
     }
 
 
@@ -115,6 +140,13 @@ def main() -> int:
     case_list = study_dir / "case_list.txt"
     if not case_list.exists():
         raise FileNotFoundError(f"Case list not found: {case_list}")
+    parameters_path = study_dir / "parameters.json"
+    if not parameters_path.exists():
+        raise FileNotFoundError(f"Study parameters not found: {parameters_path}")
+    parameters = load_json(parameters_path)
+    study_defaults = parameters["defaults"]
+    if "vapor_number_density" not in study_defaults:
+        raise KeyError(f"Missing defaults.vapor_number_density in {parameters_path}")
 
     rows: list[dict[str, object]] = []
     with case_list.open("r", encoding="utf-8") as handle:
@@ -123,15 +155,20 @@ def main() -> int:
             if not case_relpath:
                 continue
             case_dir = study_dir / Path(case_relpath).name
-            rows.append(summarize_case(case_dir))
+            rows.append(summarize_case(case_dir, study_defaults))
 
     output_path = study_dir / args.output
     fieldnames = [
         "case_name",
+        "equilibrium_pressure_Pa",
+        "xhi_m",
         "pressure_at_y_300um_Pa",
+        "reference_flux_model",
         "domain_width_m",
         "mass_flux_per_wall_length",
         "mass_flux_per_surface_length",
+        "normalized_flux_per_wall_length",
+        "normalized_flux_per_surface_length",
     ]
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(" ".join(fieldnames) + "\n")
