@@ -10,6 +10,10 @@ from pathlib import Path
 
 import numpy as np
 
+AVOGADRO = 6.02214076e23
+H2O_MOLAR_MASS = 0.01801528
+H2O_MASS_PER_MOLECULE = H2O_MOLAR_MASS / AVOGADRO
+
 
 def load_json(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
@@ -59,6 +63,8 @@ def load_rectilinear_grid(vtr_path: Path) -> dict:
 
     temp = parse_data_array(piece, "temp").reshape((nz, ny, nx))
     press = parse_data_array(piece, "press").reshape((nz, ny, nx))
+    nrho = parse_data_array(piece, "nrho").reshape((nz, ny, nx))
+    velocity = parse_data_array(piece, "velocity").reshape((nz, ny, nx, 3))
     try:
         trot = parse_data_array(piece, "trot").reshape((nz, ny, nx))
     except KeyError:
@@ -68,6 +74,8 @@ def load_rectilinear_grid(vtr_path: Path) -> dict:
         "x_centers": x_centers,
         "y_centers": y_centers,
         "z_centers": z_centers,
+        "nrho": nrho,
+        "velocity": velocity,
         "trot": trot,
         "temp": temp,
         "press": press,
@@ -78,6 +86,8 @@ def load_averaged_rectilinear_grid(vtr_paths: list[Path]) -> dict:
     grids = [load_rectilinear_grid(path) for path in vtr_paths]
     reference = grids[0]
 
+    avg_nrho = np.mean([grid["nrho"] for grid in grids], axis=0)
+    avg_velocity = np.mean([grid["velocity"] for grid in grids], axis=0)
     avg_trot = np.mean([grid["trot"] for grid in grids], axis=0)
     avg_temp = np.mean([grid["temp"] for grid in grids], axis=0)
     avg_press = np.mean([grid["press"] for grid in grids], axis=0)
@@ -86,6 +96,8 @@ def load_averaged_rectilinear_grid(vtr_paths: list[Path]) -> dict:
         "x_centers": reference["x_centers"],
         "y_centers": reference["y_centers"],
         "z_centers": reference["z_centers"],
+        "nrho": avg_nrho,
+        "velocity": avg_velocity,
         "trot": avg_trot,
         "temp": avg_temp,
         "press": avg_press,
@@ -114,6 +126,8 @@ def build_cell_table(grid: dict) -> np.ndarray:
     xx, yy = np.meshgrid(x_centers, y_centers, indexing="xy")
 
     # 2D cases have nz = 1, so take the single z slice.
+    nrho = grid["nrho"][0]
+    velocity = grid["velocity"][0]
     trot = grid["trot"][0]
     temp = grid["temp"][0]
     press = grid["press"][0]
@@ -121,6 +135,8 @@ def build_cell_table(grid: dict) -> np.ndarray:
     dtype = [
         ("x", float),
         ("y", float),
+        ("nrho", float),
+        ("v", float),
         ("trot", float),
         ("temp", float),
         ("press", float),
@@ -128,31 +144,35 @@ def build_cell_table(grid: dict) -> np.ndarray:
     table = np.empty(xx.size, dtype=dtype)
     table["x"] = xx.ravel()
     table["y"] = yy.ravel()
+    table["nrho"] = nrho.ravel()
+    table["v"] = velocity[..., 1].ravel()
     table["trot"] = trot.ravel()
     table["temp"] = temp.ravel()
     table["press"] = press.ravel()
     return table
 
 
-def select_axis_x(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def select_axis_x(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     yline = table["y"][np.argmin(np.abs(table["y"] - y0))]
     x_surface = x0
     mask = (np.abs(table["y"] - yline) <= 0.25 * dy) & (table["x"] >= x_surface - 0.5 * dx)
     rows = np.sort(table[mask], order="x")
     s = rows["x"] - x_surface
-    return s, rows["trot"], rows["temp"], rows["press"]
+    mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
+    return s, rows["trot"], rows["temp"], rows["press"], mass_flux_y
 
 
-def select_axis_y(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def select_axis_y(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     xline = table["x"][np.argmin(np.abs(table["x"] - x0))]
     y_surface = y0
     mask = (np.abs(table["x"] - xline) <= 0.25 * dx) & (table["y"] >= y_surface - 0.5 * dy)
     rows = np.sort(table[mask], order="y")
     s = rows["y"] - y_surface
-    return s, rows["trot"], rows["temp"], rows["press"]
+    mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
+    return s, rows["trot"], rows["temp"], rows["press"], mass_flux_y
 
 
-def select_axis_diag45(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def select_axis_diag45(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tol = 0.5 * max(dx, dy)
     perp = np.abs((table["y"] - y0) - (table["x"] - x0)) / math.sqrt(2.0)
     s = ((table["x"] - x0) + (table["y"] - y0)) / math.sqrt(2.0)
@@ -160,14 +180,22 @@ def select_axis_diag45(table: np.ndarray, x0: float, y0: float, dx: float, dy: f
     rows = table[mask]
     s = s[mask]
     order = np.argsort(s)
-    return s[order], rows["trot"][order], rows["temp"][order], rows["press"][order]
+    mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
+    return s[order], rows["trot"][order], rows["temp"][order], rows["press"][order], mass_flux_y[order]
 
 
-def write_profile_table(path: Path, distance: np.ndarray, rotational_temperature: np.ndarray, temperature: np.ndarray, pressure: np.ndarray) -> None:
+def write_profile_table(
+    path: Path,
+    distance: np.ndarray,
+    rotational_temperature: np.ndarray,
+    temperature: np.ndarray,
+    pressure: np.ndarray,
+    mass_flux_y: np.ndarray,
+) -> None:
     with path.open("w", encoding="utf-8") as handle:
-        handle.write("dist_m press_Pa temp_K trot_K\n")
-        for s, trot, temp, press in zip(distance, rotational_temperature, temperature, pressure):
-            handle.write(f"{s} {press} {temp} {trot}\n")
+        handle.write("dist_m press_Pa temp_K trot_K mass_flux_y_kg_m2_s\n")
+        for s, trot, temp, press, flux in zip(distance, rotational_temperature, temperature, pressure, mass_flux_y):
+            handle.write(f"{s} {press} {temp} {trot} {flux}\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -206,8 +234,8 @@ def main() -> int:
     }
 
     for name, values in profiles.items():
-        distance, rotational_temperature, temperature, pressure = values
-        write_profile_table(output_dir / f"{name}.dat", distance, rotational_temperature, temperature, pressure)
+        distance, rotational_temperature, temperature, pressure, mass_flux_y = values
+        write_profile_table(output_dir / f"{name}.dat", distance, rotational_temperature, temperature, pressure, mass_flux_y)
 
     print(f"Averaged steady frames: {len(vtr_paths)}")
     print(f"First averaged frame: {vtr_paths[0]}")

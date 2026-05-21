@@ -356,6 +356,8 @@ def render_study_profiles_script() -> str:
             '  python3 "$study_root/post/export_paraview_vtk.py" --mode all "$case_dir"',
             '  echo "Plotting steady profiles for $case_dir"',
             '  python3 "$study_root/post/plot_steady_profiles.py" "$case_dir"',
+            '  echo "Writing local condensation flux profile for $case_dir"',
+            '  python3 "$study_root/post/plot_local_flux_profile.py" "$case_dir"',
             'done < "$case_list"',
             "",
             'echo "Writing study condensation flux summary"',

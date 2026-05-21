@@ -1,0 +1,57 @@
+# 2D planar condensation reference case
+#
+# This template is rendered into case-local in.condensation files by
+# scripts/generate_flat_surface_cases.py. The bottom boundary ylo is treated
+# as a condensing flat liquid surface via evaprefpart. The top boundary yhi is
+# an open vapor reservoir created with emit/face plus vanish.
+
+seed                __SEED__
+dimension           2
+
+global              gridcut __GRIDCUT__
+
+# x is periodic to represent a laterally uniform infinite flat surface.
+# ylo is the condensing wall, yhi is the open top boundary.
+boundary            pp ss pp
+
+variable xlo index  __XLO__
+variable xhi index  __XHI__
+variable ylo index  __YLO__
+variable yhi index  __YHI__
+variable zlo index  __ZLO__
+variable zhi index  __ZHI__
+
+variable Twall index __TWALL__
+variable coeff index __COEFF__
+variable nrho_vapor index __VAPOR_NRHO__
+variable top_temp index __TOP_TEMP__
+variable top_nrho index __TOP_NRHO__
+
+create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
+create_grid         __GRID_NX__ __GRID_NY__ 1
+
+balance_grid        rcb cell
+
+global              fnum __FNUM__
+
+species             water.species H2O
+mixture             water H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_vapor}
+mixture             waterout H2O vstream 0.0 0.0 0.0 temp ${top_temp} nrho ${top_nrho}
+
+surf_collide        flat_sc evaprefpart ${Twall} ${coeff}
+surf_collide        top_out vanish
+bound_modify        ylo collide flat_sc
+fix                 out_emit emit/face waterout yhi
+bound_modify        yhi collide top_out
+
+collide             vss water water.vss
+
+timestep            __TIMESTEP__
+
+stats               __STATS_EVERY__
+stats_style         step cpu np nattempt ncoll nscoll nscheck
+
+__PRE_RUN_SECTION__
+
+__DIAGNOSTICS_SECTION__
+run                 __PRODUCTION_RUN_STEPS__
