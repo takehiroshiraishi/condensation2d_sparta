@@ -26,6 +26,7 @@ variable coeff index __COEFF__
 variable nrho_vapor index __VAPOR_NRHO__
 variable top_temp index __TOP_TEMP__
 variable top_nrho index __TOP_NRHO__
+variable nrho_emit equal ${coeff}*${nrho_vapor}
 
 create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
 create_grid         __GRID_NX__ __GRID_NY__ 1
@@ -37,10 +38,12 @@ global              fnum __FNUM__
 species             water.species H2O
 mixture             water H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_vapor}
 mixture             waterout H2O vstream 0.0 0.0 0.0 temp ${top_temp} nrho ${top_nrho}
+mixture             flat_emit H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_emit}
 
 surf_collide        flat_sc evaprefpart ${Twall} ${coeff}
 surf_collide        top_out vanish
 bound_modify        ylo collide flat_sc
+fix                 flat_emit_src emit/face flat_emit ylo
 fix                 out_emit emit/face waterout yhi
 bound_modify        yhi collide top_out
 

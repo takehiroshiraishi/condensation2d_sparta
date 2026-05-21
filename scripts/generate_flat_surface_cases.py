@@ -273,11 +273,16 @@ def render_study_profiles_script() -> str:
             'while IFS= read -r case_relpath; do',
             '  [[ -z "$case_relpath" ]] && continue',
             '  case_dir="$study_dir/$(basename "$case_relpath")"',
+            '  if [[ ! -f "$case_dir/grid_steady.dump" ]]; then',
+            '    echo "Missing $case_dir/grid_steady.dump. Run the simulation first." >&2',
+            '    exit 1',
+            '  fi',
             '  echo "Converting steady outputs to VTK for $case_dir"',
             '  python3 "$study_root/post/export_paraview_vtk.py" --mode all "$case_dir"',
             'done < "$case_list"',
             "",
-            'echo "Flat-surface reference cases only write grid and centerline outputs."',
+            'echo "Writing normalized flat-wall flux summary"',
+            'python3 "$study_root/post/summarize_flat_surface_flux.py" "$study_dir" --target-y 30e-6',
         ]
     )
 
