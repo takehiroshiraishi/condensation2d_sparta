@@ -19,7 +19,7 @@ UNIVERSAL_GAS_CONSTANT = 8.31446261815324
 H2O_MOLAR_MASS = 0.01801528
 H2O_SPECIFIC_GAS_CONSTANT = UNIVERSAL_GAS_CONSTANT / H2O_MOLAR_MASS
 OMEGA = 32.0 * math.pi / (32.0 + 9.0 * math.pi)
-DEFAULT_TARGET_Y = 30.0e-6
+DEFAULT_TARGET_Y = 90.0e-6
 
 
 def load_json(path: Path) -> dict:
@@ -52,27 +52,40 @@ def xavg_row_values(case_dir: Path, target_y: float) -> tuple[float, float]:
     return pressure, local_mass_flux_y
 
 
-def summarize_case(case_dir: Path, study_defaults: dict[str, float], target_y: float) -> dict[str, float | str]:
+def summarize_case(
+    case_dir: Path,
+    study_defaults: dict[str, float],
+    pressure_target_y: float,
+    flux_target_y: float,
+) -> dict[str, float | str]:
     metadata = load_json(case_dir / "metadata.json")
-    pressure, local_mass_flux_y = xavg_row_values(case_dir, target_y)
+    pressure, _ = xavg_row_values(case_dir, pressure_target_y)
+    _, local_mass_flux_y = xavg_row_values(case_dir, flux_target_y)
     equilibrium_pressure = metadata["top_boundary_number_density"] * BOLTZMANN * metadata["top_boundary_temperature_k"]
     liquid_temperature = metadata["temperature_k"]
     condensation_coefficient = metadata["condensation_coefficient"]
     saturation_pressure = study_defaults["vapor_number_density"] * BOLTZMANN * liquid_temperature
-    kinetic_prefactor = OMEGA * condensation_coefficient / (
+    omega_prefactor = OMEGA * condensation_coefficient / (
         condensation_coefficient + (1.0 - condensation_coefficient) * OMEGA
     )
-    reference_flux = kinetic_prefactor * (pressure - saturation_pressure) / math.sqrt(
+    schrage_prefactor = 2.0 * condensation_coefficient / (2.0 - condensation_coefficient)
+    reference_flux_omega = omega_prefactor * (pressure - saturation_pressure) / math.sqrt(
         2.0 * math.pi * H2O_SPECIFIC_GAS_CONSTANT * liquid_temperature
     )
-    normalized_flux = local_mass_flux_y / reference_flux if reference_flux else 0.0
+    reference_flux_schrage = schrage_prefactor * (pressure - saturation_pressure) / math.sqrt(
+        2.0 * math.pi * H2O_SPECIFIC_GAS_CONSTANT * liquid_temperature
+    )
+    normalized_flux_omega = local_mass_flux_y / reference_flux_omega if reference_flux_omega else 0.0
+    normalized_flux_schrage = local_mass_flux_y / reference_flux_schrage if reference_flux_schrage else 0.0
     return {
         "case_name": metadata["case_name"],
         "equilibrium_pressure_Pa": equilibrium_pressure,
         "pressure_at_target_y_Pa": pressure,
         "local_mass_flux_y_kg_m2_s": local_mass_flux_y,
-        "reference_flux_model": reference_flux,
-        "normalized_local_mass_flux_y": normalized_flux,
+        "reference_flux_omega": reference_flux_omega,
+        "reference_flux_schrage": reference_flux_schrage,
+        "normalized_local_mass_flux_y_omega": normalized_flux_omega,
+        "normalized_local_mass_flux_y_schrage": normalized_flux_schrage,
     }
 
 
@@ -80,7 +93,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize normalized gas-phase condensation flux for flat-surface reference cases.")
     parser.add_argument("study_dir", type=Path, help="Study directory under cases/")
     parser.add_argument("--output", default="flat_flux_summary.dat", help="Output filename within the study directory")
-    parser.add_argument("--target-y", type=float, default=DEFAULT_TARGET_Y, help="Height above the flat wall [m] for x-averaged sampling")
+    parser.add_argument("--target-y", type=float, default=90.0e-6, help="Height above the flat wall [m] for x-averaged pressure sampling")
+    parser.add_argument("--target-flux-y", type=float, default=DEFAULT_TARGET_Y, help="Height above the flat wall [m] for x-averaged mass-flux sampling")
     return parser.parse_args()
 
 
@@ -100,7 +114,7 @@ def main() -> int:
             if not case_relpath:
                 continue
             case_dir = study_dir / Path(case_relpath).name
-            rows.append(summarize_case(case_dir, study_defaults, args.target_y))
+            rows.append(summarize_case(case_dir, study_defaults, args.target_y, args.target_flux_y))
 
     output_path = study_dir / args.output
     fieldnames = [
@@ -108,8 +122,10 @@ def main() -> int:
         "equilibrium_pressure_Pa",
         "pressure_at_target_y_Pa",
         "local_mass_flux_y_kg_m2_s",
-        "reference_flux_model",
-        "normalized_local_mass_flux_y",
+        "reference_flux_omega",
+        "reference_flux_schrage",
+        "normalized_local_mass_flux_y_omega",
+        "normalized_local_mass_flux_y_schrage",
     ]
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(" ".join(fieldnames) + "\n")
