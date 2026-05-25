@@ -93,6 +93,90 @@ def compute_grid_count(length: float, cell_size: float, axis_name: str) -> int:
     return int(rounded_count)
 
 
+def compute_refinement_ratio(coarse_size: float, fine_size: float, label: str) -> int:
+    require(fine_size > 0.0, f"{label} must be positive.")
+    raw_ratio = coarse_size / fine_size
+    rounded_ratio = round(raw_ratio)
+    require(
+        rounded_ratio >= 1 and math.isclose(raw_ratio, rounded_ratio, rel_tol=0.0, abs_tol=1.0e-9),
+        f"{label} {format_float(fine_size)} is not an integer subdivision of coarse size {format_float(coarse_size)}.",
+    )
+    return int(rounded_ratio)
+
+
+def choose_near_droplet_cell_size(case: dict, xhi: float) -> float:
+    defaults = case["defaults"]
+    explicit = defaults.get("near_droplet_cell_size")
+    if explicit is not None:
+        return explicit
+
+    mode = defaults.get("near_droplet_cell_size_mode")
+    radius = defaults["radius"]
+    if mode == "tiered_0p125_or_0p25":
+        return 0.125e-6 if radius <= 4.0e-6 + 1.0e-12 else 0.25e-6
+    if mode == "half_gap_0p1_or_0p05":
+        half_gap = 0.5 * (xhi - radius)
+        return 0.05e-6 if half_gap <= 0.1e-6 + 1.0e-12 else 0.05e-6
+
+    return defaults["cell_size"]
+
+
+def compute_target_fnum(number_density: float, near_cell_size: float, target_particles: float) -> float:
+    require(target_particles > 0.0, "target_particles_per_near_cell must be positive.")
+    return number_density * near_cell_size * near_cell_size / target_particles
+
+
+def build_grid_regions_section(defaults: dict, geometry: dict) -> str:
+    coarse_size = defaults.get("far_field_cell_size")
+    if coarse_size is None:
+        return ""
+
+    radius = defaults["radius"]
+    theta_deg = defaults["contact_angle_deg"]
+    padding = defaults["droplet_refine_padding"]
+    top_thickness = defaults["top_refine_thickness"]
+    droplet_xhi = min(geometry["xhi"], geometry["footprint_halfwidth"] + padding)
+    droplet_yhi = min(geometry["yhi"], geometry["cap_height"] + padding)
+    top_ylo = max(geometry["ylo"], geometry["yhi"] - top_thickness)
+
+    lines = [
+        "# Hierarchical refinement regions.",
+        f"region              droplet_refine block {format_float(geometry['xlo'])} {format_float(droplet_xhi)} {format_float(geometry['ylo'])} {format_float(droplet_yhi)} INF INF",
+        f"region              top_refine block {format_float(geometry['xlo'])} {format_float(geometry['xhi'])} {format_float(top_ylo)} {format_float(geometry['yhi'])} INF INF",
+        "region              refine_union union 2 droplet_refine top_refine",
+    ]
+    if defaults["near_droplet_cell_size"] < defaults["top_surface_cell_size"] - 1.0e-12:
+        lines.append(
+            f"region              droplet_core block {format_float(geometry['xlo'])} {format_float(droplet_xhi)} {format_float(geometry['ylo'])} {format_float(droplet_yhi)} INF INF"
+        )
+    return "\n".join(lines)
+
+
+def build_create_grid_section(defaults: dict, geometry: dict) -> str:
+    coarse_size = defaults.get("far_field_cell_size")
+    if coarse_size is None:
+        return f"create_grid         {geometry['grid_nx']} {geometry['grid_ny']} 1"
+
+    top_ratio = compute_refinement_ratio(coarse_size, defaults["top_surface_cell_size"], "top_surface_cell_size")
+    near_size = defaults["near_droplet_cell_size"]
+    if near_size < defaults["top_surface_cell_size"] - 1.0e-12:
+        droplet_ratio = compute_refinement_ratio(
+            defaults["top_surface_cell_size"],
+            near_size,
+            "near_droplet_cell_size",
+        )
+        return (
+            f"create_grid         {geometry['grid_nx']} {geometry['grid_ny']} 1 levels 3 "
+            f"region 2 refine_union {top_ratio} {top_ratio} 1 "
+            f"region 3 droplet_core {droplet_ratio} {droplet_ratio} 1 inside any"
+        )
+
+    return (
+        f"create_grid         {geometry['grid_nx']} {geometry['grid_ny']} 1 levels 2 "
+        f"region 2 refine_union {top_ratio} {top_ratio} 1 inside any"
+    )
+
+
 def build_case_name(
     geometry_mode: str,
     top_boundary_temperature_k: float,
@@ -376,7 +460,7 @@ def build_geometry(case: dict) -> dict:
     cap_height = radius * (1.0 - math.cos(math.radians(theta_deg)))
     box_length_x = defaults["box_length_x"]
     box_height = defaults["box_height"]
-    cell_size = defaults["cell_size"]
+    coarse_cell_size = defaults.get("far_field_cell_size", defaults["cell_size"])
 
     require(cap_height < box_height, "Droplet cap height exceeds the box height.")
 
@@ -399,16 +483,19 @@ def build_geometry(case: dict) -> dict:
 
     require(footprint_halfwidth <= xhi + 1.0e-12, "Droplet footprint extends past xhi.")
 
-    grid_nx = compute_grid_count(xhi - xlo, cell_size, "x")
-    grid_ny = compute_grid_count(box_height, cell_size, "y")
+    defaults["near_droplet_cell_size"] = choose_near_droplet_cell_size(case, xhi)
+    defaults["top_surface_cell_size"] = defaults.get("top_surface_cell_size", defaults["near_droplet_cell_size"])
+
+    grid_nx = compute_grid_count(xhi - xlo, coarse_cell_size, "x")
+    grid_ny = compute_grid_count(box_height, coarse_cell_size, "y")
 
     return {
         "xlo": xlo,
         "xhi": xhi,
         "ylo": 0.0,
         "yhi": box_height,
-        "zlo": -0.5 * cell_size,
-        "zhi": 0.5 * cell_size,
+        "zlo": -0.5 * coarse_cell_size,
+        "zhi": 0.5 * coarse_cell_size,
         "centers": centers,
         "boundary_x": boundary_x,
         "boundary_y": "ss",
@@ -417,7 +504,7 @@ def build_geometry(case: dict) -> dict:
         "footprint_halfwidth": footprint_halfwidth,
         "cap_height": cap_height,
         "symmetry_multiplier": symmetry_multiplier,
-        "cell_size": cell_size,
+        "cell_size": coarse_cell_size,
         "grid_nx": grid_nx,
         "grid_ny": grid_ny,
     }
@@ -442,10 +529,10 @@ def render_case_input(template_text: str, case: dict, geometry: dict) -> str:
         "__COEFF__": format_float(defaults["condensation_coefficient"]),
         "__TOP_TEMP__": format_float(case["top_boundary_temperature_k"]),
         "__TOP_NRHO__": format_float(case["top_boundary_number_density"]),
-        "__GRID_NX__": str(geometry["grid_nx"]),
-        "__GRID_NY__": str(geometry["grid_ny"]),
         "__VAPOR_NRHO__": format_float(defaults["vapor_number_density"]),
         "__FNUM__": format_float(defaults["fnum"]),
+        "__GRID_REGION_SECTION__": build_grid_regions_section(defaults, geometry),
+        "__CREATE_GRID_SECTION__": build_create_grid_section(defaults, geometry),
         "__GEOMETRY_SECTION__": render_geometry_section(geometry["centers"]),
         "__SURF_MODIFY_SECTION__": render_surf_modify_section(geometry["droplet_count"]),
         "__SURFACE_EMIT_SECTION__": render_surface_emit_section(geometry["droplet_count"]),
@@ -501,6 +588,9 @@ def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: d
         "sampling_steps": defaults["sampling_steps"],
         "stats_every": defaults["stats_every"],
         "cell_size": geometry["cell_size"],
+        "far_field_cell_size": defaults.get("far_field_cell_size", geometry["cell_size"]),
+        "top_surface_cell_size": defaults.get("top_surface_cell_size", geometry["cell_size"]),
+        "near_droplet_cell_size": defaults.get("near_droplet_cell_size", geometry["cell_size"]),
         "box_length_x": defaults["box_length_x"],
         "box_height": defaults["box_height"],
         "grid_cells": [geometry["grid_nx"], geometry["grid_ny"], 1],
@@ -634,6 +724,9 @@ def write_manifest(study_dir: Path, rows: list[dict]) -> None:
         "radius",
         "box_height",
         "spacing",
+        "far_field_cell_size",
+        "top_surface_cell_size",
+        "near_droplet_cell_size",
         "droplet_count",
     ]
     manifest_path = study_dir / "case_manifest.csv"
@@ -658,6 +751,13 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
 
     for case in iter_cases(config):
         geometry = build_geometry(case)
+        target_particles = case["defaults"].get("target_particles_per_near_cell")
+        if target_particles is not None:
+            case["defaults"]["fnum"] = compute_target_fnum(
+                case["defaults"]["vapor_number_density"],
+                case["defaults"]["near_droplet_cell_size"],
+                target_particles,
+            )
         case_name = build_case_name(
             case["geometry_mode"],
             case["top_boundary_temperature_k"],
@@ -702,6 +802,9 @@ def generate_cases(config_path: Path, force: bool) -> list[dict]:
                 "radius": case["defaults"]["radius"],
                 "box_height": case["defaults"]["box_height"],
                 "spacing": "" if case["spacing"] is None else case["spacing"],
+                "far_field_cell_size": case["defaults"].get("far_field_cell_size", case["defaults"]["cell_size"]),
+                "top_surface_cell_size": case["defaults"].get("top_surface_cell_size", case["defaults"]["cell_size"]),
+                "near_droplet_cell_size": case["defaults"].get("near_droplet_cell_size", case["defaults"]["cell_size"]),
                 "droplet_count": geometry["droplet_count"],
             }
         )

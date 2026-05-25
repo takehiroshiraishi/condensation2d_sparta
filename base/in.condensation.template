@@ -28,7 +28,8 @@ variable top_nrho index __TOP_NRHO__
 variable nrho_emit equal ${coeff}*${nrho_vapor}
 
 create_box          ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
-create_grid         __GRID_NX__ __GRID_NY__ 1
+__GRID_REGION_SECTION__
+__CREATE_GRID_SECTION__
 
 balance_grid        rcb cell
 

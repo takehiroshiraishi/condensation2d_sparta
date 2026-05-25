@@ -6,12 +6,16 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
 
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plot_steady_profiles import (
     H2O_MASS_PER_MOLECULE,
-    averaging_vtr_paths,
+    build_cell_table,
     droplet_center,
-    load_averaged_rectilinear_grid,
+    load_averaged_grid_rows,
 )
 
 
@@ -83,26 +87,23 @@ def nearest_profile_value(path: Path, target_y: float, column_index: int) -> flo
 
 
 def xavg_row_values(case_dir: Path, metadata: dict, target_y: float) -> tuple[float, float, float]:
-    vtr_paths = averaging_vtr_paths(case_dir)
-    grid = load_averaged_rectilinear_grid(vtr_paths)
+    rows, _ = load_averaged_grid_rows(case_dir)
+    table = build_cell_table(rows, metadata)
     _, y_center = droplet_center(metadata)
     apex_y = y_center + metadata["radius"]
     target_absolute_y = apex_y + target_y
-    y_index = int(min(range(len(grid["y_centers"])), key=lambda i: abs(grid["y_centers"][i] - target_absolute_y)))
-
-    press_row = grid["press"][0, y_index, :]
-    nrho_row = grid["nrho"][0, y_index, :]
-    vy_row = grid["velocity"][0, y_index, :, 1]
-    x_centers = grid["x_centers"]
-    if len(x_centers) > 1:
-        dx = float(x_centers[1] - x_centers[0])
-    else:
-        dx = float(metadata["simulation_bounds"]["xhi"] - metadata["simulation_bounds"]["xlo"])
-    pressure = float(press_row.mean())
-    mass_flux_row = -(nrho_row * H2O_MASS_PER_MOLECULE * vy_row)
-    local_mass_flux_y = float(mass_flux_row.mean())
+    unique_y = np.unique(table["y"])
+    yline = float(unique_y[np.argmin(np.abs(unique_y - target_absolute_y))])
+    row_mask = np.isclose(table["y"], yline)
+    row_cells = np.sort(table[row_mask], order="x")
+    row_width = float(row_cells["dx"].sum())
+    if row_width == 0.0:
+        raise ValueError(f"Row width is zero while sampling {case_dir}")
+    pressure = float(np.sum(row_cells["press"] * row_cells["dx"]) / row_width)
+    mass_flux_row = -(row_cells["nrho"] * H2O_MASS_PER_MOLECULE * row_cells["v"])
+    local_mass_flux_y = float(np.sum(mass_flux_row * row_cells["dx"]) / row_width)
     symmetry_multiplier = metadata["droplets"][0]["symmetry_multiplier"]
-    integrated_mass_flux_y = float(mass_flux_row.sum() * dx * symmetry_multiplier)
+    integrated_mass_flux_y = float(np.sum(mass_flux_row * row_cells["dx"]) * symmetry_multiplier)
     return pressure, local_mass_flux_y, integrated_mass_flux_y
 
 

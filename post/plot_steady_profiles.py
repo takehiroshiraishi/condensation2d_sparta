@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -20,88 +19,104 @@ def load_json(path: Path) -> dict:
         return json.load(handle)
 
 
-def averaging_vtr_paths(case_dir: Path) -> list[Path]:
-    vtr_dir = case_dir / "vtk_series" / "grid_steady"
-    candidates = sorted(vtr_dir.glob("grid_steady_*.vtr"))
-    if not candidates:
-        raise FileNotFoundError(f"No grid_steady_*.vtr files found in {vtr_dir}")
-
-    nonzero_candidates = [path for path in candidates if path.stem != "grid_steady_0000000000"]
-    if not nonzero_candidates:
-        return candidates[-1:]
-    if len(nonzero_candidates) == 1:
-        return nonzero_candidates
-    return nonzero_candidates[1:]
-
-
-def parse_data_array(piece: ET.Element, name: str) -> np.ndarray:
-    for array in piece.iterfind(".//DataArray"):
-        if array.attrib.get("Name") == name:
-            text = array.text or ""
-            return np.fromstring(text, sep=" ")
-    raise KeyError(f"Could not find DataArray '{name}'")
-
-
-def load_rectilinear_grid(vtr_path: Path) -> dict:
-    tree = ET.parse(vtr_path)
-    root = tree.getroot()
-    piece = root.find(".//Piece")
-    if piece is None:
-        raise ValueError(f"Could not find Piece element in {vtr_path}")
-
-    x_bounds = parse_data_array(piece, "x_coordinates")
-    y_bounds = parse_data_array(piece, "y_coordinates")
-    z_bounds = parse_data_array(piece, "z_coordinates")
-
-    x_centers = 0.5 * (x_bounds[:-1] + x_bounds[1:])
-    y_centers = 0.5 * (y_bounds[:-1] + y_bounds[1:])
-    z_centers = 0.5 * (z_bounds[:-1] + z_bounds[1:])
-
-    nx = len(x_centers)
-    ny = len(y_centers)
-    nz = len(z_centers)
-
-    temp = parse_data_array(piece, "temp").reshape((nz, ny, nx))
-    press = parse_data_array(piece, "press").reshape((nz, ny, nx))
-    nrho = parse_data_array(piece, "nrho").reshape((nz, ny, nx))
-    velocity = parse_data_array(piece, "velocity").reshape((nz, ny, nx, 3))
-    try:
-        trot = parse_data_array(piece, "trot").reshape((nz, ny, nx))
-    except KeyError:
-        trot = np.zeros((nz, ny, nx))
-
-    return {
-        "x_centers": x_centers,
-        "y_centers": y_centers,
-        "z_centers": z_centers,
-        "nrho": nrho,
-        "velocity": velocity,
-        "trot": trot,
-        "temp": temp,
-        "press": press,
-    }
+def parse_grid_dump_frames(path: Path) -> list[dict]:
+    frames: list[dict] = []
+    with path.open("r", encoding="utf-8") as handle:
+        lines = iter(handle)
+        for line in lines:
+            if line.strip() != "ITEM: TIMESTEP":
+                continue
+            timestep = int(next(lines).strip())
+            if next(lines).strip() != "ITEM: NUMBER OF CELLS":
+                raise ValueError(f"Unexpected dump format in {path}")
+            count = int(next(lines).strip())
+            bounds_header = next(lines).strip()
+            if not bounds_header.startswith("ITEM: BOX BOUNDS"):
+                raise ValueError(f"Unexpected bounds header in {path}")
+            next(lines)
+            next(lines)
+            next(lines)
+            columns = next(lines).strip().split()[2:]
+            rows = []
+            for _ in range(count):
+                raw = next(lines).split()
+                row = {column: float(value) for column, value in zip(columns, raw)}
+                if "zc" not in row:
+                    row["zc"] = 0.0
+                rows.append(row)
+            frames.append({"timestep": timestep, "rows": rows})
+    return frames
 
 
-def load_averaged_rectilinear_grid(vtr_paths: list[Path]) -> dict:
-    grids = [load_rectilinear_grid(path) for path in vtr_paths]
-    reference = grids[0]
+def select_averaging_frames(frames: list[dict]) -> list[dict]:
+    if not frames:
+        raise ValueError("No frames available to average.")
+    nonzero_frames = [frame for frame in frames if frame["timestep"] != 0]
+    if not nonzero_frames:
+        return frames[-1:]
+    if len(nonzero_frames) == 1:
+        return nonzero_frames
+    return nonzero_frames[1:]
 
-    avg_nrho = np.mean([grid["nrho"] for grid in grids], axis=0)
-    avg_velocity = np.mean([grid["velocity"] for grid in grids], axis=0)
-    avg_trot = np.mean([grid["trot"] for grid in grids], axis=0)
-    avg_temp = np.mean([grid["temp"] for grid in grids], axis=0)
-    avg_press = np.mean([grid["press"] for grid in grids], axis=0)
 
-    return {
-        "x_centers": reference["x_centers"],
-        "y_centers": reference["y_centers"],
-        "z_centers": reference["z_centers"],
-        "nrho": avg_nrho,
-        "velocity": avg_velocity,
-        "trot": avg_trot,
-        "temp": avg_temp,
-        "press": avg_press,
-    }
+def map_frame_fields(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+    source_fields = [
+        name
+        for name in ("f_grid_avg[1]", "f_grid_avg[2]", "f_grid_avg[3]", "f_grid_avg[4]", "f_grid_avg[5]", "f_grid_avg[6]")
+        if name in rows[0]
+    ]
+    if not source_fields:
+        source_fields = [
+            name
+            for name in ("f_centerline_avg[1]", "f_centerline_avg[2]", "f_centerline_avg[3]", "f_centerline_avg[4]", "f_centerline_avg[5]", "f_centerline_avg[6]")
+            if name in rows[0]
+        ]
+    target_fields = ("nrho", "u", "v", "trot", "temp", "press")
+    mapped_rows: list[dict] = []
+    for row in rows:
+        mapped = dict(row)
+        for source_name, target_name in zip(source_fields, target_fields):
+            mapped[target_name] = row[source_name]
+        mapped.setdefault("u", 0.0)
+        mapped.setdefault("v", 0.0)
+        mapped.setdefault("trot", 0.0)
+        mapped.setdefault("temp", 0.0)
+        mapped.setdefault("press", 0.0)
+        mapped_rows.append(mapped)
+    return mapped_rows
+
+
+def average_frame_rows(frames: list[dict]) -> list[dict]:
+    selected = select_averaging_frames(frames)
+    reference_rows = map_frame_fields(selected[0]["rows"])
+    sum_rows = {int(row["id"]): dict(row) for row in reference_rows}
+    for row in sum_rows.values():
+        for field in ("nrho", "u", "v", "trot", "temp", "press"):
+            row[field] = float(row.get(field, 0.0))
+
+    for frame in selected[1:]:
+        for row in map_frame_fields(frame["rows"]):
+            summed = sum_rows[int(row["id"])]
+            for field in ("nrho", "u", "v", "trot", "temp", "press"):
+                summed[field] += float(row.get(field, 0.0))
+
+    count = float(len(selected))
+    averaged_rows = []
+    for row_id in sorted(sum_rows):
+        row = sum_rows[row_id]
+        for field in ("nrho", "u", "v", "trot", "temp", "press"):
+            row[field] /= count
+        averaged_rows.append(row)
+    return averaged_rows
+
+
+def load_averaged_grid_rows(case_dir: Path, dump_name: str = "grid_steady.dump") -> tuple[list[dict], list[int]]:
+    dump_path = case_dir / dump_name
+    frames = parse_grid_dump_frames(dump_path)
+    selected = select_averaging_frames(frames)
+    return average_frame_rows(frames), [frame["timestep"] for frame in selected]
 
 
 def droplet_center(metadata: dict) -> tuple[float, float]:
@@ -120,63 +135,129 @@ def surface_point(x0: float, y0: float, radius: float, direction_x: float, direc
     return x0 + radius * direction_x / norm, y0 + radius * direction_y / norm
 
 
-def build_cell_table(grid: dict) -> np.ndarray:
-    x_centers = grid["x_centers"]
-    y_centers = grid["y_centers"]
-    xx, yy = np.meshgrid(x_centers, y_centers, indexing="xy")
+def reconstruct_edges_from_centers(centers: list[float], lower: float, upper: float) -> list[float]:
+    if not centers:
+        return []
+    if len(centers) == 1:
+        return [lower, upper]
+    boundary = lower
+    boundaries = [boundary]
+    for center in centers:
+        boundary = 2.0 * center - boundary
+        boundaries.append(boundary)
+    correction = upper - boundaries[-1]
+    adjusted = [edge + (correction if index % 2 == 1 else 0.0) for index, edge in enumerate(boundaries)]
+    adjusted[0] = lower
+    adjusted[-1] = upper
+    return adjusted
 
-    # 2D cases have nz = 1, so take the single z slice.
-    nrho = grid["nrho"][0]
-    velocity = grid["velocity"][0]
-    trot = grid["trot"][0]
-    temp = grid["temp"][0]
-    press = grid["press"][0]
+
+def build_cell_table(rows: list[dict], metadata: dict) -> np.ndarray:
+    bounds = metadata["simulation_bounds"]
+    rows_by_y: dict[float, list[dict]] = {}
+    rows_by_x: dict[float, list[dict]] = {}
+    for row in rows:
+        rows_by_y.setdefault(row["yc"], []).append(row)
+        rows_by_x.setdefault(row["xc"], []).append(row)
+
+    x_bounds_by_cell: dict[int, tuple[float, float]] = {}
+    for y_center, row_group in rows_by_y.items():
+        del y_center
+        ordered = sorted(row_group, key=lambda item: item["xc"])
+        centers = [row["xc"] for row in ordered]
+        edges = reconstruct_edges_from_centers(centers, bounds["xlo"], bounds["xhi"])
+        for index, row in enumerate(ordered):
+            x_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
+
+    y_bounds_by_cell: dict[int, tuple[float, float]] = {}
+    for x_center, row_group in rows_by_x.items():
+        del x_center
+        ordered = sorted(row_group, key=lambda item: item["yc"])
+        centers = [row["yc"] for row in ordered]
+        edges = reconstruct_edges_from_centers(centers, bounds["ylo"], bounds["yhi"])
+        for index, row in enumerate(ordered):
+            y_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
 
     dtype = [
+        ("id", int),
         ("x", float),
         ("y", float),
+        ("xlo", float),
+        ("xhi", float),
+        ("ylo", float),
+        ("yhi", float),
+        ("dx", float),
+        ("dy", float),
         ("nrho", float),
+        ("u", float),
         ("v", float),
         ("trot", float),
         ("temp", float),
         ("press", float),
     ]
-    table = np.empty(xx.size, dtype=dtype)
-    table["x"] = xx.ravel()
-    table["y"] = yy.ravel()
-    table["nrho"] = nrho.ravel()
-    table["v"] = velocity[..., 1].ravel()
-    table["trot"] = trot.ravel()
-    table["temp"] = temp.ravel()
-    table["press"] = press.ravel()
+    table = np.empty(len(rows), dtype=dtype)
+    for index, row in enumerate(sorted(rows, key=lambda item: int(item["id"]))):
+        row_id = int(row["id"])
+        xlo, xhi = x_bounds_by_cell[row_id]
+        ylo, yhi = y_bounds_by_cell[row_id]
+        table[index] = (
+            row_id,
+            row["xc"],
+            row["yc"],
+            xlo,
+            xhi,
+            ylo,
+            yhi,
+            xhi - xlo,
+            yhi - ylo,
+            row.get("nrho", 0.0),
+            row.get("u", 0.0),
+            row.get("v", 0.0),
+            row.get("trot", 0.0),
+            row.get("temp", 0.0),
+            row.get("press", 0.0),
+        )
     return table
 
 
-def select_axis_x(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    yline = table["y"][np.argmin(np.abs(table["y"] - y0))]
+def positive_spacing(values: np.ndarray) -> float:
+    unique = np.unique(values)
+    if len(unique) < 2:
+        return 1.0
+    diffs = np.diff(np.sort(unique))
+    positive = diffs[diffs > 0.0]
+    if positive.size == 0:
+        return 1.0
+    return float(positive.min())
+
+
+def select_axis_x(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    yline = float(table["y"][np.argmin(np.abs(table["y"] - y0))])
     x_surface = x0
-    mask = (np.abs(table["y"] - yline) <= 0.25 * dy) & (table["x"] >= x_surface - 0.5 * dx)
+    dx_tol = positive_spacing(table["x"])
+    mask = np.isclose(table["y"], yline) & (table["x"] >= x_surface - 0.5 * dx_tol)
     rows = np.sort(table[mask], order="x")
     s = rows["x"] - x_surface
     mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
     return s, rows["trot"], rows["temp"], rows["press"], mass_flux_y
 
 
-def select_axis_y(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    xline = table["x"][np.argmin(np.abs(table["x"] - x0))]
+def select_axis_y(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    xline = float(table["x"][np.argmin(np.abs(table["x"] - x0))])
     y_surface = y0
-    mask = (np.abs(table["x"] - xline) <= 0.25 * dx) & (table["y"] >= y_surface - 0.5 * dy)
+    dy_tol = positive_spacing(table["y"])
+    mask = np.isclose(table["x"], xline) & (table["y"] >= y_surface - 0.5 * dy_tol)
     rows = np.sort(table[mask], order="y")
     s = rows["y"] - y_surface
     mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
     return s, rows["trot"], rows["temp"], rows["press"], mass_flux_y
 
 
-def select_axis_diag45(table: np.ndarray, x0: float, y0: float, dx: float, dy: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tol = 0.5 * max(dx, dy)
+def select_axis_diag45(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    tol = 0.5 * max(positive_spacing(table["x"]), positive_spacing(table["y"]))
     perp = np.abs((table["y"] - y0) - (table["x"] - x0)) / math.sqrt(2.0)
     s = ((table["x"] - x0) + (table["y"] - y0)) / math.sqrt(2.0)
-    mask = (perp <= tol) & (s >= -0.5 * max(dx, dy))
+    mask = (perp <= tol) & (s >= -0.5 * tol)
     rows = table[mask]
     s = s[mask]
     order = np.argsort(s)
@@ -215,31 +296,28 @@ def main() -> int:
         legacy_combined_path.unlink()
 
     metadata = load_json(case_dir / "metadata.json")
-    vtr_paths = averaging_vtr_paths(case_dir)
-    grid = load_averaged_rectilinear_grid(vtr_paths)
-    table = build_cell_table(grid)
+    rows, averaged_timesteps = load_averaged_grid_rows(case_dir)
+    table = build_cell_table(rows, metadata)
 
     x_center, y_center = droplet_center(metadata)
     radius = metadata["radius"]
     x0_x, y0_x = surface_point(x_center, y_center, radius, 1.0, 0.0)
     x0_y, y0_y = surface_point(x_center, y_center, radius, 0.0, 1.0)
     x0_diag, y0_diag = surface_point(x_center, y_center, radius, 1.0, 1.0)
-    dx = float(grid["x_centers"][1] - grid["x_centers"][0]) if len(grid["x_centers"]) > 1 else 1.0
-    dy = float(grid["y_centers"][1] - grid["y_centers"][0]) if len(grid["y_centers"]) > 1 else 1.0
 
     profiles = {
-        "x_axis": select_axis_x(table, x0_x, y0_x, dx, dy),
-        "y_axis": select_axis_y(table, x0_y, y0_y, dx, dy),
-        "diag_45deg": select_axis_diag45(table, x0_diag, y0_diag, dx, dy),
+        "x_axis": select_axis_x(table, x0_x, y0_x),
+        "y_axis": select_axis_y(table, x0_y, y0_y),
+        "diag_45deg": select_axis_diag45(table, x0_diag, y0_diag),
     }
 
     for name, values in profiles.items():
         distance, rotational_temperature, temperature, pressure, mass_flux_y = values
         write_profile_table(output_dir / f"{name}.dat", distance, rotational_temperature, temperature, pressure, mass_flux_y)
 
-    print(f"Averaged steady frames: {len(vtr_paths)}")
-    print(f"First averaged frame: {vtr_paths[0]}")
-    print(f"Last averaged frame: {vtr_paths[-1]}")
+    print(f"Averaged steady frames: {len(averaged_timesteps)}")
+    print(f"First averaged timestep: {averaged_timesteps[0]}")
+    print(f"Last averaged timestep: {averaged_timesteps[-1]}")
     print(f"Droplet center used: x={x_center:.12g}, y={y_center:.12g}")
     for name in profiles:
         print(f"Wrote profile table to: {output_dir / f'{name}.dat'}")
