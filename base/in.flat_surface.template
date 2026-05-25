@@ -12,7 +12,7 @@ global              gridcut __GRIDCUT__
 
 # x is periodic to represent a laterally uniform infinite flat surface.
 # ylo is the condensing wall, yhi is the open top boundary.
-boundary            pp ss pp
+boundary            rr ss pp
 
 variable xlo index  __XLO__
 variable xhi index  __XHI__
@@ -40,7 +40,7 @@ mixture             water H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_vapo
 mixture             waterout H2O vstream 0.0 0.0 0.0 temp ${top_temp} nrho ${top_nrho}
 mixture             flat_emit H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_emit}
 
-surf_collide        flat_sc evaprefpart ${Twall} ${coeff}
+surf_collide        flat_sc evapref ${Twall} ${coeff}
 surf_collide        top_out vanish
 bound_modify        ylo collide flat_sc
 fix                 flat_emit_src emit/face flat_emit ylo
