@@ -86,6 +86,42 @@ def nearest_profile_value(path: Path, target_y: float, column_index: int) -> flo
     return best_value
 
 
+def read_profile_table(path: Path) -> dict[str, np.ndarray]:
+    with path.open("r", encoding="utf-8") as handle:
+        header = handle.readline().split()
+        rows = [[float(value) for value in line.split()] for line in handle if line.strip()]
+    if not rows:
+        raise ValueError(f"No profile rows found in {path}")
+    data = np.asarray(rows, dtype=float)
+    return {name: data[:, index] for index, name in enumerate(header)}
+
+
+def plateau_pressure_from_profile(path: Path, min_y: float, window: int, tolerance: float) -> float:
+    profile = read_profile_table(path)
+    distance = profile["dist_m"]
+    pressure = profile["press_Pa"]
+    candidates = np.where(distance >= min_y)[0]
+    if candidates.size == 0:
+        candidates = np.arange(len(distance))
+    start_index = int(candidates[0])
+    best: tuple[float, int, float] | None = None
+    for index in range(start_index, len(pressure) - window + 1):
+        p_window = pressure[index:index + window]
+        span = float(np.max(p_window) - np.min(p_window))
+        mean_pressure = float(np.mean(p_window))
+        relative_span = span / abs(mean_pressure) if mean_pressure else span
+        if best is None or relative_span < best[0]:
+            best = (relative_span, index, mean_pressure)
+    if best is None:
+        raise ValueError(f"Could not find pressure plateau candidates in {path}")
+    if best[0] > tolerance:
+        print(
+            f"Warning: best pressure plateau span {best[0]:.6g} exceeds tolerance {tolerance:.6g} in {path}",
+            file=sys.stderr,
+        )
+    return best[2]
+
+
 def xavg_row_values(case_dir: Path, metadata: dict, target_y: float) -> tuple[float, float, float]:
     rows, _ = load_averaged_grid_rows(case_dir)
     table = build_cell_table(rows, metadata)
@@ -114,21 +150,34 @@ def summarize_case(
     target_flux_y: float,
     sample_mode: str,
     flux_source: str,
+    pressure_mode: str,
+    plateau_min_y: float,
+    plateau_window: int,
+    plateau_tolerance: float,
 ) -> dict[str, object]:
     metadata = load_json(case_dir / "metadata.json")
     y_axis_path = case_dir / "profiles_steady" / "y_axis.dat"
     if not y_axis_path.exists():
         raise FileNotFoundError(f"Missing profile file: {y_axis_path}")
 
+    if pressure_mode == "plateau":
+        pressure = plateau_pressure_from_profile(y_axis_path, plateau_min_y, plateau_window, plateau_tolerance)
+    elif pressure_mode == "target_y":
+        pressure = None
+    else:
+        raise ValueError(f"Unsupported pressure mode: {pressure_mode}")
+
     if sample_mode == "centerline":
-        pressure = nearest_profile_value(y_axis_path, target_y, 1)
+        if pressure is None:
+            pressure = nearest_profile_value(y_axis_path, target_y, 1)
         local_mass_flux_y = nearest_profile_value(y_axis_path, target_flux_y, 4)
         symmetry_multiplier = metadata["droplets"][0]["symmetry_multiplier"]
         integrated_mass_flux_y = local_mass_flux_y * (
             metadata["simulation_bounds"]["xhi"] - metadata["simulation_bounds"]["xlo"]
         ) * symmetry_multiplier
     elif sample_mode == "xavg":
-        pressure, _, _ = xavg_row_values(case_dir, metadata, target_y)
+        if pressure is None:
+            pressure, _, _ = xavg_row_values(case_dir, metadata, target_y)
         _, local_mass_flux_y, integrated_mass_flux_y = xavg_row_values(case_dir, metadata, target_flux_y)
     else:
         raise ValueError(f"Unsupported sample mode: {sample_mode}")
@@ -175,7 +224,7 @@ def summarize_case(
         "case_name": metadata["case_name"],
         "equilibrium_pressure_Pa": equilibrium_pressure,
         "xhi_m": xhi,
-        "pressure_at_y_300um_Pa": pressure,
+        "reference_pressure_Pa": pressure,
         "local_mass_flux_y_at_target": local_mass_flux_y,
         "reference_flux_model": reference_flux,
         "domain_width_m": full_domain_width,
@@ -195,6 +244,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-flux-y", type=float, default=TARGET_Y, help="Sample gas-phase mass flux from y_axis.dat at this distance from the droplet surface [m]")
     parser.add_argument("--sample-mode", choices=("centerline", "xavg"), default="centerline", help="How to sample gas-phase pressure and mass flux from the averaged field")
     parser.add_argument("--flux-source", choices=("surf_dump", "gas_integral"), default="surf_dump", help="Source used to build wall/surface normalized flux columns")
+    parser.add_argument("--pressure-mode", choices=("target_y", "plateau"), default="target_y", help="Pressure used in the reference flux model")
+    parser.add_argument("--plateau-min-y", type=float, default=50.0e-6, help="Ignore profile points below this distance when detecting pressure plateau [m]")
+    parser.add_argument("--plateau-window", type=int, default=20, help="Number of consecutive y_axis points used for plateau detection")
+    parser.add_argument("--plateau-tolerance", type=float, default=2.0e-3, help="Relative pressure span accepted as a plateau")
     return parser.parse_args()
 
 
@@ -227,6 +280,10 @@ def main() -> int:
                     args.target_flux_y,
                     args.sample_mode,
                     args.flux_source,
+                    args.pressure_mode,
+                    args.plateau_min_y,
+                    args.plateau_window,
+                    args.plateau_tolerance,
                 )
             )
 
@@ -235,7 +292,7 @@ def main() -> int:
         "case_name",
         "equilibrium_pressure_Pa",
         "xhi_m",
-        "pressure_at_y_300um_Pa",
+        "reference_pressure_Pa",
         "local_mass_flux_y_at_target",
         "reference_flux_model",
         "domain_width_m",

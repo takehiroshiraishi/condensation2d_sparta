@@ -152,31 +152,109 @@ def reconstruct_edges_from_centers(centers: list[float], lower: float, upper: fl
     return adjusted
 
 
+def refined_cell_size(row: dict, metadata: dict) -> tuple[float, float] | None:
+    far_size = metadata.get("far_field_cell_size")
+    top_size = metadata.get("top_surface_cell_size")
+    near_size = metadata.get("near_droplet_cell_size")
+    if far_size is None or top_size is None or near_size is None:
+        return None
+
+    x = row["xc"]
+    y = row["yc"]
+    bounds = metadata["simulation_bounds"]
+    droplet_padding = metadata.get("droplet_refine_padding")
+    if droplet_padding is None:
+        droplet_padding = 5.0e-6
+    top_thickness = metadata.get("top_refine_thickness")
+    if top_thickness is None:
+        top_thickness = 5.0e-6
+
+    in_droplet_refine = False
+    for droplet in metadata.get("droplets", []):
+        x_center = droplet["center_x"]
+        footprint = droplet["analytic_contact_halfwidth_m"]
+        xlo = max(bounds["xlo"], x_center - footprint - droplet_padding)
+        xhi = min(bounds["xhi"], x_center + footprint + droplet_padding)
+        ylo = bounds["ylo"]
+        yhi = min(bounds["yhi"], metadata["surface_gap"] + metadata["droplet_cap_height"] + droplet_padding)
+        if xlo <= x <= xhi and ylo <= y <= yhi:
+            in_droplet_refine = True
+            break
+
+    in_top_refine = y >= bounds["yhi"] - top_thickness
+    if in_droplet_refine and near_size < top_size:
+        size = near_size
+    elif in_droplet_refine or in_top_refine:
+        size = top_size
+    else:
+        size = far_size
+    return float(size), float(size)
+
+
 def build_cell_table(rows: list[dict], metadata: dict) -> np.ndarray:
     bounds = metadata["simulation_bounds"]
-    rows_by_y: dict[float, list[dict]] = {}
-    rows_by_x: dict[float, list[dict]] = {}
-    for row in rows:
-        rows_by_y.setdefault(row["yc"], []).append(row)
-        rows_by_x.setdefault(row["xc"], []).append(row)
-
+    use_refined_sizes = refined_cell_size(rows[0], metadata) is not None if rows else False
     x_bounds_by_cell: dict[int, tuple[float, float]] = {}
-    for y_center, row_group in rows_by_y.items():
-        del y_center
-        ordered = sorted(row_group, key=lambda item: item["xc"])
-        centers = [row["xc"] for row in ordered]
-        edges = reconstruct_edges_from_centers(centers, bounds["xlo"], bounds["xhi"])
-        for index, row in enumerate(ordered):
-            x_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
-
     y_bounds_by_cell: dict[int, tuple[float, float]] = {}
-    for x_center, row_group in rows_by_x.items():
-        del x_center
-        ordered = sorted(row_group, key=lambda item: item["yc"])
-        centers = [row["yc"] for row in ordered]
-        edges = reconstruct_edges_from_centers(centers, bounds["ylo"], bounds["yhi"])
-        for index, row in enumerate(ordered):
-            y_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
+    if use_refined_sizes:
+        rows_by_y: dict[float, list[dict]] = {}
+        rows_by_x: dict[float, list[dict]] = {}
+        for row in rows:
+            rows_by_y.setdefault(row["yc"], []).append(row)
+            rows_by_x.setdefault(row["xc"], []).append(row)
+
+        fallback_dx, fallback_dy = refined_cell_size(rows[0], metadata) or (metadata["cell_size"], metadata["cell_size"])
+        for row_group in rows_by_y.values():
+            ordered = sorted(row_group, key=lambda item: item["xc"])
+            centers = [row["xc"] for row in ordered]
+            for index, row in enumerate(ordered):
+                gaps = []
+                if index > 0:
+                    gaps.append(centers[index] - centers[index - 1])
+                if index + 1 < len(centers):
+                    gaps.append(centers[index + 1] - centers[index])
+                dx = min((gap for gap in gaps if gap > 0.0), default=fallback_dx)
+                x_bounds_by_cell[int(row["id"])] = (
+                    max(bounds["xlo"], row["xc"] - 0.5 * dx),
+                    min(bounds["xhi"], row["xc"] + 0.5 * dx),
+                )
+
+        for row_group in rows_by_x.values():
+            ordered = sorted(row_group, key=lambda item: item["yc"])
+            centers = [row["yc"] for row in ordered]
+            for index, row in enumerate(ordered):
+                gaps = []
+                if index > 0:
+                    gaps.append(centers[index] - centers[index - 1])
+                if index + 1 < len(centers):
+                    gaps.append(centers[index + 1] - centers[index])
+                dy = min((gap for gap in gaps if gap > 0.0), default=fallback_dy)
+                y_bounds_by_cell[int(row["id"])] = (
+                    max(bounds["ylo"], row["yc"] - 0.5 * dy),
+                    min(bounds["yhi"], row["yc"] + 0.5 * dy),
+                )
+    else:
+        rows_by_y: dict[float, list[dict]] = {}
+        rows_by_x: dict[float, list[dict]] = {}
+        for row in rows:
+            rows_by_y.setdefault(row["yc"], []).append(row)
+            rows_by_x.setdefault(row["xc"], []).append(row)
+
+        for y_center, row_group in rows_by_y.items():
+            del y_center
+            ordered = sorted(row_group, key=lambda item: item["xc"])
+            centers = [row["xc"] for row in ordered]
+            edges = reconstruct_edges_from_centers(centers, bounds["xlo"], bounds["xhi"])
+            for index, row in enumerate(ordered):
+                x_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
+
+        for x_center, row_group in rows_by_x.items():
+            del x_center
+            ordered = sorted(row_group, key=lambda item: item["yc"])
+            centers = [row["yc"] for row in ordered]
+            edges = reconstruct_edges_from_centers(centers, bounds["ylo"], bounds["yhi"])
+            for index, row in enumerate(ordered):
+                y_bounds_by_cell[int(row["id"])] = (edges[index], edges[index + 1])
 
     dtype = [
         ("id", int),
@@ -231,11 +309,18 @@ def positive_spacing(values: np.ndarray) -> float:
     return float(positive.min())
 
 
+def interval_mask(table: np.ndarray, axis: str, value: float) -> np.ndarray:
+    lo_name = f"{axis}lo"
+    hi_name = f"{axis}hi"
+    widths = table[f"d{axis}"]
+    tolerance = max(float(np.min(widths[widths > 0.0])) * 1.0e-6, 1.0e-15)
+    return (table[lo_name] <= value + tolerance) & (value <= table[hi_name] + tolerance)
+
+
 def select_axis_x(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    yline = float(table["y"][np.argmin(np.abs(table["y"] - y0))])
     x_surface = x0
     dx_tol = positive_spacing(table["x"])
-    mask = np.isclose(table["y"], yline) & (table["x"] >= x_surface - 0.5 * dx_tol)
+    mask = interval_mask(table, "y", y0) & (table["x"] >= x_surface - 0.5 * dx_tol)
     rows = np.sort(table[mask], order="x")
     s = rows["x"] - x_surface
     mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])
@@ -243,10 +328,9 @@ def select_axis_x(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, 
 
 
 def select_axis_y(table: np.ndarray, x0: float, y0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    xline = float(table["x"][np.argmin(np.abs(table["x"] - x0))])
     y_surface = y0
     dy_tol = positive_spacing(table["y"])
-    mask = np.isclose(table["x"], xline) & (table["y"] >= y_surface - 0.5 * dy_tol)
+    mask = interval_mask(table, "x", x0) & (table["y"] >= y_surface - 0.5 * dy_tol)
     rows = np.sort(table[mask], order="y")
     s = rows["y"] - y_surface
     mass_flux_y = -(rows["nrho"] * H2O_MASS_PER_MOLECULE * rows["v"])

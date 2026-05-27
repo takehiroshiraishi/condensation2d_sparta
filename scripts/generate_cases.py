@@ -591,6 +591,8 @@ def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: d
         "far_field_cell_size": defaults.get("far_field_cell_size", geometry["cell_size"]),
         "top_surface_cell_size": defaults.get("top_surface_cell_size", geometry["cell_size"]),
         "near_droplet_cell_size": defaults.get("near_droplet_cell_size", geometry["cell_size"]),
+        "droplet_refine_padding": defaults.get("droplet_refine_padding"),
+        "top_refine_thickness": defaults.get("top_refine_thickness"),
         "box_length_x": defaults["box_length_x"],
         "box_height": defaults["box_height"],
         "grid_cells": [geometry["grid_nx"], geometry["grid_ny"], 1],

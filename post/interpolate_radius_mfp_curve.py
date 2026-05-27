@@ -100,7 +100,8 @@ def main() -> int:
         grouped: dict[float, list[tuple[float, float]]] = defaultdict(list)
         for row in data:
             radius = parse_radius(row["case_name"])
-            pressure = float(row["pressure_at_y_300um_Pa"])
+            pressure_name = "reference_pressure_Pa" if "reference_pressure_Pa" in row else "pressure_at_y_300um_Pa"
+            pressure = float(row[pressure_name])
             normalized_flux = float(row[args.summary_column])
             grouped[radius].append((pressure, normalized_flux))
 
