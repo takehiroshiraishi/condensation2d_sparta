@@ -6,6 +6,10 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from summarize_study_flux import plateau_pressure_from_profile
 
 BOLTZMANN = 1.380649e-23
 UNIVERSAL_GAS_CONSTANT = 8.31446261815324
@@ -52,11 +56,23 @@ def parse_last_surf_frame(path: Path) -> tuple[list[str], list[dict[str, float]]
     return last_columns, last_rows
 
 
+def droplet_center(metadata: dict, droplet_index: int) -> tuple[float, float]:
+    droplet = metadata["droplets"][droplet_index - 1]
+    radius = metadata["radius"]
+    theta_deg = metadata["contact_angle_deg"]
+    surface_gap = metadata["surface_gap"]
+    return droplet["center_x"], surface_gap - radius * math.cos(math.radians(theta_deg))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write local condensation flux profile along the droplet surface.")
     parser.add_argument("case_dir", type=Path, help="Case directory")
     parser.add_argument("--droplet-index", type=int, default=1, help="Droplet index to process")
     parser.add_argument("--reference-pressure", type=float, default=None, help="Pressure [Pa] used for local flux normalization. Defaults to equilibrium top-boundary pressure.")
+    parser.add_argument("--pressure-mode", choices=("equilibrium", "plateau", "explicit"), default="equilibrium", help="Pressure used for local flux normalization")
+    parser.add_argument("--plateau-min-y", type=float, default=50.0e-6, help="Ignore y_axis points below this distance when detecting pressure plateau [m]")
+    parser.add_argument("--plateau-window", type=int, default=20, help="Number of consecutive y_axis points used for plateau detection")
+    parser.add_argument("--plateau-tolerance", type=float, default=2.0e-3, help="Relative pressure span warning tolerance for plateau detection")
     args = parser.parse_args()
 
     case_dir = args.case_dir.resolve()
@@ -79,6 +95,7 @@ def main() -> int:
     geom_by_id = {int(row["id"]): row for row in geom_rows}
     if flux_by_id.keys() != geom_by_id.keys():
         raise ValueError(f"Surface IDs do not match between {flux_path} and {geom_path}")
+    center_x, center_y = droplet_center(metadata, droplet_index)
 
     parameters_path = case_dir.parent / "parameters.json"
     if parameters_path.exists():
@@ -89,8 +106,18 @@ def main() -> int:
     if vapor_number_density is None:
         raise KeyError("Could not determine vapor_number_density for local flux normalization.")
 
-    pressure = args.reference_pressure
-    if pressure is None:
+    if args.pressure_mode == "explicit":
+        if args.reference_pressure is None:
+            raise ValueError("--pressure-mode explicit requires --reference-pressure")
+        pressure = args.reference_pressure
+    elif args.pressure_mode == "plateau":
+        pressure = plateau_pressure_from_profile(
+            case_dir / "profiles_steady" / "y_axis.dat",
+            args.plateau_min_y,
+            args.plateau_window,
+            args.plateau_tolerance,
+        )
+    else:
         pressure = metadata["top_boundary_number_density"] * BOLTZMANN * metadata["top_boundary_temperature_k"]
     liquid_temperature = metadata["temperature_k"]
     saturation_pressure = vapor_number_density * BOLTZMANN * liquid_temperature
@@ -106,19 +133,21 @@ def main() -> int:
     for surf_id, geom in geom_by_id.items():
         x_mid = 0.5 * (geom["v1x"] + geom["v2x"])
         y_mid = 0.5 * (geom["v1y"] + geom["v2y"])
+        angle = math.atan2(y_mid - center_y, x_mid - center_x)
         seg_len = ((geom["v2x"] - geom["v1x"]) ** 2 + (geom["v2y"] - geom["v1y"]) ** 2) ** 0.5
         segments.append(
             {
                 "id": surf_id,
                 "x_mid": x_mid,
                 "y_mid": y_mid,
+                "angle_rad": angle,
                 "seg_len": seg_len,
                 "flux": flux_by_id[surf_id],
             }
         )
 
-    # Half-droplet surfaces run from apex (smallest x) to contact line (largest x).
-    segments.sort(key=lambda row: (row["x_mid"], -row["y_mid"]))
+    # Sort from apex toward the contact line for the right half-droplet.
+    segments.sort(key=lambda row: abs(row["angle_rad"] - 0.5 * math.pi))
 
     distance = 0.0
     output_rows = []
@@ -134,6 +163,7 @@ def main() -> int:
                 "arc_dist_over_half_arc": distance / half_arc_length if half_arc_length else 0.0,
                 "local_mass_flux": row["flux"],
                 "normalized_local_flux": row["flux"] / reference_flux if reference_flux else 0.0,
+                "angle_rad": row["angle_rad"],
                 "x_mid": row["x_mid"],
                 "y_mid": row["y_mid"],
             }
@@ -143,11 +173,11 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "local_flux.dat"
     with output_path.open("w", encoding="utf-8") as handle:
-        handle.write("arc_dist_m arc_dist_over_half_arc local_mass_flux normalized_local_flux x_mid y_mid\n")
+        handle.write("arc_dist_m arc_dist_over_half_arc local_mass_flux normalized_local_flux angle_rad x_mid y_mid\n")
         for row in output_rows:
             handle.write(
                 f"{row['arc_dist_m']} {row['arc_dist_over_half_arc']} {row['local_mass_flux']} "
-                f"{row['normalized_local_flux']} {row['x_mid']} {row['y_mid']}\n"
+                f"{row['normalized_local_flux']} {row['angle_rad']} {row['x_mid']} {row['y_mid']}\n"
             )
 
     print(f"Wrote local flux profile to: {output_path}")

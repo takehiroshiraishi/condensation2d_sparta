@@ -49,7 +49,7 @@ surf_collide        top_out vanish
 __SURF_MODIFY_SECTION__
 __SURFACE_EMIT_SECTION__
 fix                 out_emit emit/face waterout yhi
-bound_modify        ylo collide wall_sc
+__YLO_BOUND_MODIFY_SECTION__
 bound_modify        yhi collide top_out
 
 collide             vss water water.vss

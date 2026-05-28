@@ -441,11 +441,20 @@ def render_study_profiles_script() -> str:
             '  echo "Plotting steady profiles for $case_dir"',
             '  python3 "$study_root/post/plot_steady_profiles.py" "$case_dir"',
             '  echo "Writing local condensation flux profile for $case_dir"',
-            '  python3 "$study_root/post/plot_local_flux_profile.py" "$case_dir"',
+            '  python3 "$study_root/post/plot_local_flux_profile.py" "$case_dir" --pressure-mode plateau',
             'done < "$case_list"',
             "",
-            'echo "Writing study condensation flux summary"',
-            'python3 "$study_root/post/summarize_study_flux.py" "$study_dir"',
+            'echo "Writing study condensation flux summary from surf_droplet1.dump"',
+            'python3 "$study_root/post/summarize_study_flux.py" "$study_dir" \\',
+            '  --target-y 300e-6 --target-flux-y 300e-6 --sample-mode xavg --flux-source surf_dump \\',
+            '  --pressure-mode plateau \\',
+            '  --output condensation_flux_summary_surf_dump.dat',
+            "",
+            'echo "Writing study condensation flux summary from integral of -rho v_y"',
+            'python3 "$study_root/post/summarize_study_flux.py" "$study_dir" \\',
+            '  --target-y 300e-6 --target-flux-y 300e-6 --sample-mode xavg --flux-source gas_integral \\',
+            '  --pressure-mode plateau \\',
+            '  --output condensation_flux_summary_gas_integral.dat',
         ]
     )
 
@@ -488,6 +497,13 @@ def build_geometry(case: dict) -> dict:
 
     grid_nx = compute_grid_count(xhi - xlo, coarse_cell_size, "x")
     grid_ny = compute_grid_count(box_height, coarse_cell_size, "y")
+    ylo_boundary = defaults.get("ylo_boundary", "wall")
+    if ylo_boundary == "wall":
+        boundary_y = "ss"
+    elif ylo_boundary == "reflect":
+        boundary_y = "rs"
+    else:
+        raise ValueError(f"Unsupported ylo_boundary: {ylo_boundary}")
 
     return {
         "xlo": xlo,
@@ -498,7 +514,8 @@ def build_geometry(case: dict) -> dict:
         "zhi": 0.5 * coarse_cell_size,
         "centers": centers,
         "boundary_x": boundary_x,
-        "boundary_y": "ss",
+        "boundary_y": boundary_y,
+        "ylo_boundary": ylo_boundary,
         "boundary_z": "pp",
         "droplet_count": len(centers),
         "footprint_halfwidth": footprint_halfwidth,
@@ -536,6 +553,9 @@ def render_case_input(template_text: str, case: dict, geometry: dict) -> str:
         "__GEOMETRY_SECTION__": render_geometry_section(geometry["centers"]),
         "__SURF_MODIFY_SECTION__": render_surf_modify_section(geometry["droplet_count"]),
         "__SURFACE_EMIT_SECTION__": render_surface_emit_section(geometry["droplet_count"]),
+        "__YLO_BOUND_MODIFY_SECTION__": (
+            "bound_modify        ylo collide wall_sc" if geometry["ylo_boundary"] == "wall" else ""
+        ),
         "__TIMESTEP__": format_float(defaults["time_step"]),
         "__PRE_RUN_SECTION__": render_pre_run_section(defaults),
         "__DIAGNOSTICS_SECTION__": render_diagnostics_section(
@@ -610,6 +630,7 @@ def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: d
         },
         "boundary_x": geometry["boundary_x"],
         "boundary_y": geometry["boundary_y"],
+        "ylo_boundary": geometry["ylo_boundary"],
         "boundary_z": geometry["boundary_z"],
         "droplets": droplets,
     }
