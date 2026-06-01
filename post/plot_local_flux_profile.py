@@ -9,7 +9,11 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from summarize_study_flux import plateau_pressure_from_profile
+from summarize_study_flux import (
+    drift_corrected_reference_flux,
+    plateau_window_from_profile,
+    xavg_row_state,
+)
 
 BOLTZMANN = 1.380649e-23
 UNIVERSAL_GAS_CONSTANT = 8.31446261815324
@@ -110,15 +114,19 @@ def main() -> int:
         if args.reference_pressure is None:
             raise ValueError("--pressure-mode explicit requires --reference-pressure")
         pressure = args.reference_pressure
+        drift_sample_y = None
     elif args.pressure_mode == "plateau":
-        pressure = plateau_pressure_from_profile(
+        plateau = plateau_window_from_profile(
             case_dir / "profiles_steady" / "y_axis.dat",
             args.plateau_min_y,
             args.plateau_window,
             args.plateau_tolerance,
         )
+        drift_sample_y = plateau["distance"]
+        pressure = plateau["pressure"]
     else:
         pressure = metadata["top_boundary_number_density"] * BOLTZMANN * metadata["top_boundary_temperature_k"]
+        drift_sample_y = None
     liquid_temperature = metadata["temperature_k"]
     saturation_pressure = vapor_number_density * BOLTZMANN * liquid_temperature
     condensation_coefficient = metadata["condensation_coefficient"]
@@ -128,6 +136,21 @@ def main() -> int:
     reference_flux = kinetic_prefactor * (pressure - saturation_pressure) / math.sqrt(
         2.0 * math.pi * H2O_SPECIFIC_GAS_CONSTANT * liquid_temperature
     )
+    drift_reference_flux = 0.0
+    drift_reference_pressure = 0.0
+    drift_reference_velocity_y = 0.0
+    if drift_sample_y is not None:
+        drift_state = xavg_row_state(case_dir, metadata, drift_sample_y)
+        drift_reference_pressure = drift_state["pressure"]
+        drift_reference_velocity_y = drift_state["velocity_y"]
+        drift_reference_flux = drift_corrected_reference_flux(
+            drift_state["number_density"],
+            drift_state["temperature"],
+            drift_state["velocity_y"],
+            vapor_number_density,
+            liquid_temperature,
+            condensation_coefficient,
+        )
 
     segments: list[dict[str, float]] = []
     for surf_id, geom in geom_by_id.items():
@@ -163,6 +186,7 @@ def main() -> int:
                 "arc_dist_over_half_arc": distance / half_arc_length if half_arc_length else 0.0,
                 "local_mass_flux": row["flux"],
                 "normalized_local_flux": row["flux"] / reference_flux if reference_flux else 0.0,
+                "drift_normalized_local_flux": row["flux"] / drift_reference_flux if drift_reference_flux else 0.0,
                 "angle_rad": row["angle_rad"],
                 "x_mid": row["x_mid"],
                 "y_mid": row["y_mid"],
@@ -173,16 +197,26 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "local_flux.dat"
     with output_path.open("w", encoding="utf-8") as handle:
-        handle.write("arc_dist_m arc_dist_over_half_arc local_mass_flux normalized_local_flux angle_rad x_mid y_mid\n")
+        handle.write(
+            "arc_dist_m arc_dist_over_half_arc local_mass_flux normalized_local_flux "
+            "angle_rad x_mid y_mid drift_normalized_local_flux "
+            "drift_reference_flux_model drift_reference_pressure_Pa drift_reference_velocity_y_m_s\n"
+        )
         for row in output_rows:
             handle.write(
                 f"{row['arc_dist_m']} {row['arc_dist_over_half_arc']} {row['local_mass_flux']} "
-                f"{row['normalized_local_flux']} {row['angle_rad']} {row['x_mid']} {row['y_mid']}\n"
+                f"{row['normalized_local_flux']} {row['angle_rad']} {row['x_mid']} {row['y_mid']} "
+                f"{row['drift_normalized_local_flux']} {drift_reference_flux} "
+                f"{drift_reference_pressure} {drift_reference_velocity_y}\n"
             )
 
     print(f"Wrote local flux profile to: {output_path}")
     print(f"Local flux reference pressure [Pa]: {pressure}")
     print(f"Local flux reference model [kg/m^2/s]: {reference_flux}")
+    if drift_reference_flux:
+        print(f"Local flux drift reference pressure [Pa]: {drift_reference_pressure}")
+        print(f"Local flux drift reference velocity_y [m/s]: {drift_reference_velocity_y}")
+        print(f"Local flux drift reference model [kg/m^2/s]: {drift_reference_flux}")
     return 0
 
 

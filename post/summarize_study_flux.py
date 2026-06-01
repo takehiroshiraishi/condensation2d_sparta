@@ -96,7 +96,7 @@ def read_profile_table(path: Path) -> dict[str, np.ndarray]:
     return {name: data[:, index] for index, name in enumerate(header)}
 
 
-def plateau_pressure_from_profile(path: Path, min_y: float, window: int, tolerance: float) -> float:
+def plateau_window_from_profile(path: Path, min_y: float, window: int, tolerance: float) -> dict[str, float]:
     profile = read_profile_table(path)
     distance = profile["dist_m"]
     pressure = profile["press_Pa"]
@@ -104,14 +104,16 @@ def plateau_pressure_from_profile(path: Path, min_y: float, window: int, toleran
     if candidates.size == 0:
         candidates = np.arange(len(distance))
     start_index = int(candidates[0])
-    best: tuple[float, int, float] | None = None
+    best: tuple[float, int, float, float] | None = None
     for index in range(start_index, len(pressure) - window + 1):
         p_window = pressure[index:index + window]
+        d_window = distance[index:index + window]
         span = float(np.max(p_window) - np.min(p_window))
         mean_pressure = float(np.mean(p_window))
+        mean_distance = float(np.mean(d_window))
         relative_span = span / abs(mean_pressure) if mean_pressure else span
         if best is None or relative_span < best[0]:
-            best = (relative_span, index, mean_pressure)
+            best = (relative_span, index, mean_pressure, mean_distance)
     if best is None:
         raise ValueError(f"Could not find pressure plateau candidates in {path}")
     if best[0] > tolerance:
@@ -119,10 +121,57 @@ def plateau_pressure_from_profile(path: Path, min_y: float, window: int, toleran
             f"Warning: best pressure plateau span {best[0]:.6g} exceeds tolerance {tolerance:.6g} in {path}",
             file=sys.stderr,
         )
-    return best[2]
+    return {
+        "relative_span": best[0],
+        "start_index": float(best[1]),
+        "pressure": best[2],
+        "distance": best[3],
+    }
+
+
+def plateau_pressure_from_profile(path: Path, min_y: float, window: int, tolerance: float) -> float:
+    return plateau_window_from_profile(path, min_y, window, tolerance)["pressure"]
+
+
+def one_sided_mass_flux_to_surface(number_density: float, temperature: float, normal_velocity: float) -> float:
+    """Mass flux from a drifting Maxwellian toward a surface.
+
+    normal_velocity is positive away from the surface. Negative values increase
+    the incoming flux toward the surface.
+    """
+    if temperature <= 0.0 or number_density <= 0.0:
+        return 0.0
+    cth = math.sqrt(BOLTZMANN * temperature / H2O_MASS_PER_MOLECULE)
+    s = normal_velocity / (math.sqrt(2.0) * cth)
+    density = number_density * H2O_MASS_PER_MOLECULE
+    return density * (
+        cth / math.sqrt(2.0 * math.pi) * math.exp(-(s * s))
+        - 0.5 * normal_velocity * math.erfc(s)
+    )
+
+
+def drift_corrected_reference_flux(
+    number_density: float,
+    gas_temperature: float,
+    normal_velocity: float,
+    saturation_number_density: float,
+    liquid_temperature: float,
+    condensation_coefficient: float,
+) -> float:
+    kinetic_prefactor = OMEGA * condensation_coefficient / (
+        condensation_coefficient + (1.0 - condensation_coefficient) * OMEGA
+    )
+    incoming_flux = one_sided_mass_flux_to_surface(number_density, gas_temperature, normal_velocity)
+    saturation_flux = one_sided_mass_flux_to_surface(saturation_number_density, liquid_temperature, 0.0)
+    return kinetic_prefactor * (incoming_flux - saturation_flux)
 
 
 def xavg_row_values(case_dir: Path, metadata: dict, target_y: float) -> tuple[float, float, float]:
+    state = xavg_row_state(case_dir, metadata, target_y)
+    return state["pressure"], state["mass_flux_y"], state["integrated_mass_flux_y"]
+
+
+def xavg_row_state(case_dir: Path, metadata: dict, target_y: float) -> dict[str, float]:
     rows, _ = load_averaged_grid_rows(case_dir)
     table = build_cell_table(rows, metadata)
     _, y_center = droplet_center(metadata)
@@ -136,11 +185,24 @@ def xavg_row_values(case_dir: Path, metadata: dict, target_y: float) -> tuple[fl
     if row_width == 0.0:
         raise ValueError(f"Row width is zero while sampling {case_dir}")
     pressure = float(np.sum(row_cells["press"] * row_cells["dx"]) / row_width)
+    number_density = float(np.sum(row_cells["nrho"] * row_cells["dx"]) / row_width)
+    temperature = float(np.sum(row_cells["temp"] * row_cells["dx"]) / row_width)
+    velocity_y = float(np.sum(row_cells["v"] * row_cells["dx"]) / row_width)
     mass_flux_row = -(row_cells["nrho"] * H2O_MASS_PER_MOLECULE * row_cells["v"])
     local_mass_flux_y = float(np.sum(mass_flux_row * row_cells["dx"]) / row_width)
     symmetry_multiplier = metadata["droplets"][0]["symmetry_multiplier"]
     integrated_mass_flux_y = float(np.sum(mass_flux_row * row_cells["dx"]) * symmetry_multiplier)
-    return pressure, local_mass_flux_y, integrated_mass_flux_y
+    return {
+        "sample_y_from_apex_m": target_y,
+        "sample_y_absolute_m": target_absolute_y,
+        "sample_y_grid_m": yline,
+        "pressure": pressure,
+        "number_density": number_density,
+        "temperature": temperature,
+        "velocity_y": velocity_y,
+        "mass_flux_y": local_mass_flux_y,
+        "integrated_mass_flux_y": integrated_mass_flux_y,
+    }
 
 
 def summarize_case(
@@ -154,6 +216,7 @@ def summarize_case(
     plateau_min_y: float,
     plateau_window: int,
     plateau_tolerance: float,
+    include_drift_reference: bool,
 ) -> dict[str, object]:
     metadata = load_json(case_dir / "metadata.json")
     y_axis_path = case_dir / "profiles_steady" / "y_axis.dat"
@@ -161,8 +224,10 @@ def summarize_case(
         raise FileNotFoundError(f"Missing profile file: {y_axis_path}")
 
     if pressure_mode == "plateau":
-        pressure = plateau_pressure_from_profile(y_axis_path, plateau_min_y, plateau_window, plateau_tolerance)
+        plateau = plateau_window_from_profile(y_axis_path, plateau_min_y, plateau_window, plateau_tolerance)
+        pressure = plateau["pressure"]
     elif pressure_mode == "target_y":
+        plateau = None
         pressure = None
     else:
         raise ValueError(f"Unsupported pressure mode: {pressure_mode}")
@@ -219,6 +284,40 @@ def summarize_case(
     normalized_flux_per_wall_length = flux_per_wall_length / reference_flux if reference_flux else 0.0
     normalized_flux_per_surface_length = flux_per_surface_length / reference_flux if reference_flux else 0.0
     normalized_local_mass_flux_y = local_mass_flux_y / reference_flux if reference_flux else 0.0
+    drift_state = {
+        "pressure": 0.0,
+        "number_density": 0.0,
+        "temperature": 0.0,
+        "velocity_y": 0.0,
+        "mass_flux_y": 0.0,
+    }
+    drift_reference_flux = 0.0
+    drift_normalized_flux_per_wall_length = 0.0
+    drift_normalized_flux_per_surface_length = 0.0
+    drift_normalized_local_mass_flux_y = 0.0
+    if include_drift_reference:
+        if pressure_mode == "plateau":
+            drift_sample_y = plateau["distance"] if plateau is not None else target_y
+        else:
+            drift_sample_y = target_y
+        drift_state = xavg_row_state(case_dir, metadata, drift_sample_y)
+        drift_reference_flux = drift_corrected_reference_flux(
+            drift_state["number_density"],
+            drift_state["temperature"],
+            drift_state["velocity_y"],
+            vapor_number_density,
+            liquid_temperature,
+            condensation_coefficient,
+        )
+        drift_normalized_flux_per_wall_length = (
+            flux_per_wall_length / drift_reference_flux if drift_reference_flux else 0.0
+        )
+        drift_normalized_flux_per_surface_length = (
+            flux_per_surface_length / drift_reference_flux if drift_reference_flux else 0.0
+        )
+        drift_normalized_local_mass_flux_y = (
+            local_mass_flux_y / drift_reference_flux if drift_reference_flux else 0.0
+        )
 
     return {
         "case_name": metadata["case_name"],
@@ -233,6 +332,15 @@ def summarize_case(
         "normalized_flux_per_wall_length": normalized_flux_per_wall_length,
         "normalized_flux_per_surface_length": normalized_flux_per_surface_length,
         "normalized_local_mass_flux_y_at_target": normalized_local_mass_flux_y,
+        "drift_reference_pressure_Pa": drift_state["pressure"],
+        "drift_reference_number_density_m3": drift_state["number_density"],
+        "drift_reference_temperature_K": drift_state["temperature"],
+        "drift_reference_velocity_y_m_s": drift_state["velocity_y"],
+        "drift_reference_mass_flux_y_kg_m2_s": drift_state["mass_flux_y"],
+        "drift_reference_flux_model": drift_reference_flux,
+        "drift_normalized_flux_per_wall_length": drift_normalized_flux_per_wall_length,
+        "drift_normalized_flux_per_surface_length": drift_normalized_flux_per_surface_length,
+        "drift_normalized_local_mass_flux_y_at_target": drift_normalized_local_mass_flux_y,
     }
 
 
@@ -248,6 +356,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plateau-min-y", type=float, default=50.0e-6, help="Ignore profile points below this distance when detecting pressure plateau [m]")
     parser.add_argument("--plateau-window", type=int, default=20, help="Number of consecutive y_axis points used for plateau detection")
     parser.add_argument("--plateau-tolerance", type=float, default=2.0e-3, help="Relative pressure span accepted as a plateau")
+    parser.add_argument("--include-drift-reference", action="store_true", help="Append normalization using the plateau drifting-Maxwellian gas state from grid_steady.dump")
     return parser.parse_args()
 
 
@@ -284,6 +393,7 @@ def main() -> int:
                     args.plateau_min_y,
                     args.plateau_window,
                     args.plateau_tolerance,
+                    args.include_drift_reference,
                 )
             )
 
@@ -301,6 +411,15 @@ def main() -> int:
         "normalized_flux_per_wall_length",
         "normalized_flux_per_surface_length",
         "normalized_local_mass_flux_y_at_target",
+        "drift_reference_pressure_Pa",
+        "drift_reference_number_density_m3",
+        "drift_reference_temperature_K",
+        "drift_reference_velocity_y_m_s",
+        "drift_reference_mass_flux_y_kg_m2_s",
+        "drift_reference_flux_model",
+        "drift_normalized_flux_per_wall_length",
+        "drift_normalized_flux_per_surface_length",
+        "drift_normalized_local_mass_flux_y_at_target",
     ]
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(" ".join(fieldnames) + "\n")

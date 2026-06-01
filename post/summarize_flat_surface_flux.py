@@ -7,11 +7,14 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
+
 from plot_steady_profiles import (
     H2O_MASS_PER_MOLECULE,
-    averaging_vtr_paths,
-    load_averaged_rectilinear_grid,
+    build_cell_table,
+    load_averaged_grid_rows,
 )
+from summarize_study_flux import drift_corrected_reference_flux
 
 
 BOLTZMANN = 1.380649e-23
@@ -28,28 +31,30 @@ def load_json(path: Path) -> dict:
 
 
 def xavg_row_values(case_dir: Path, target_y: float) -> tuple[float, float]:
-    try:
-        vtr_paths = averaging_vtr_paths(case_dir)
-    except FileNotFoundError as exc:
-        grid_dump = case_dir / "grid_steady.dump"
-        if grid_dump.exists():
-            raise FileNotFoundError(
-                f"Missing exported VTK frames in {case_dir / 'vtk_series' / 'grid_steady'}. "
-                f"grid_steady.dump exists, so rerun export_paraview_vtk.py for this case."
-            ) from exc
-        raise FileNotFoundError(
-            f"Missing steady outputs for {case_dir}. "
-            f"Expected {grid_dump} from the SPARTA run before postprocessing."
-        ) from exc
-    grid = load_averaged_rectilinear_grid(vtr_paths)
-    y_centers = grid["y_centers"]
-    y_index = int(min(range(len(y_centers)), key=lambda i: abs(y_centers[i] - target_y)))
-    press_row = grid["press"][0, y_index, :]
-    nrho_row = grid["nrho"][0, y_index, :]
-    vy_row = grid["velocity"][0, y_index, :, 1]
-    pressure = float(press_row.mean())
-    local_mass_flux_y = float((-(nrho_row * H2O_MASS_PER_MOLECULE * vy_row)).mean())
-    return pressure, local_mass_flux_y
+    metadata = load_json(case_dir / "metadata.json")
+    state = xavg_row_state_from_dump(case_dir, metadata, target_y)
+    return state["pressure"], state["mass_flux_y"]
+
+
+def xavg_row_state_from_dump(case_dir: Path, metadata: dict, target_y: float) -> dict[str, float]:
+    rows, _ = load_averaged_grid_rows(case_dir)
+    table = build_cell_table(rows, metadata)
+    unique_y = np.unique(table["y"])
+    yline = float(unique_y[np.argmin(np.abs(unique_y - target_y))])
+    row_cells = np.sort(table[np.isclose(table["y"], yline)], order="x")
+    row_width = float(row_cells["dx"].sum())
+    if row_width == 0.0:
+        raise ValueError(f"Row width is zero while sampling {case_dir}")
+    mass_flux_row = -(row_cells["nrho"] * H2O_MASS_PER_MOLECULE * row_cells["v"])
+    return {
+        "sample_y_m": target_y,
+        "sample_y_grid_m": yline,
+        "pressure": float(np.sum(row_cells["press"] * row_cells["dx"]) / row_width),
+        "number_density": float(np.sum(row_cells["nrho"] * row_cells["dx"]) / row_width),
+        "temperature": float(np.sum(row_cells["temp"] * row_cells["dx"]) / row_width),
+        "velocity_y": float(np.sum(row_cells["v"] * row_cells["dx"]) / row_width),
+        "mass_flux_y": float(np.sum(mass_flux_row * row_cells["dx"]) / row_width),
+    }
 
 
 def summarize_case(
@@ -61,6 +66,7 @@ def summarize_case(
     metadata = load_json(case_dir / "metadata.json")
     pressure, _ = xavg_row_values(case_dir, pressure_target_y)
     _, local_mass_flux_y = xavg_row_values(case_dir, flux_target_y)
+    drift_state = xavg_row_state_from_dump(case_dir, metadata, pressure_target_y)
     equilibrium_pressure = metadata["top_boundary_number_density"] * BOLTZMANN * metadata["top_boundary_temperature_k"]
     liquid_temperature = metadata["temperature_k"]
     condensation_coefficient = metadata["condensation_coefficient"]
@@ -77,6 +83,15 @@ def summarize_case(
     )
     normalized_flux_omega = local_mass_flux_y / reference_flux_omega if reference_flux_omega else 0.0
     normalized_flux_schrage = local_mass_flux_y / reference_flux_schrage if reference_flux_schrage else 0.0
+    drift_reference_flux = drift_corrected_reference_flux(
+        drift_state["number_density"],
+        drift_state["temperature"],
+        drift_state["velocity_y"],
+        study_defaults["vapor_number_density"],
+        liquid_temperature,
+        condensation_coefficient,
+    )
+    drift_normalized_flux = local_mass_flux_y / drift_reference_flux if drift_reference_flux else 0.0
     return {
         "case_name": metadata["case_name"],
         "equilibrium_pressure_Pa": equilibrium_pressure,
@@ -86,6 +101,13 @@ def summarize_case(
         "reference_flux_schrage": reference_flux_schrage,
         "normalized_local_mass_flux_y_omega": normalized_flux_omega,
         "normalized_local_mass_flux_y_schrage": normalized_flux_schrage,
+        "drift_reference_pressure_Pa": drift_state["pressure"],
+        "drift_reference_number_density_m3": drift_state["number_density"],
+        "drift_reference_temperature_K": drift_state["temperature"],
+        "drift_reference_velocity_y_m_s": drift_state["velocity_y"],
+        "drift_reference_mass_flux_y_kg_m2_s": drift_state["mass_flux_y"],
+        "drift_reference_flux_model": drift_reference_flux,
+        "drift_normalized_local_mass_flux_y": drift_normalized_flux,
     }
 
 
@@ -126,6 +148,13 @@ def main() -> int:
         "reference_flux_schrage",
         "normalized_local_mass_flux_y_omega",
         "normalized_local_mass_flux_y_schrage",
+        "drift_reference_pressure_Pa",
+        "drift_reference_number_density_m3",
+        "drift_reference_temperature_K",
+        "drift_reference_velocity_y_m_s",
+        "drift_reference_mass_flux_y_kg_m2_s",
+        "drift_reference_flux_model",
+        "drift_normalized_local_mass_flux_y",
     ]
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(" ".join(fieldnames) + "\n")
