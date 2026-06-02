@@ -237,14 +237,79 @@ def render_surf_modify_section(droplet_count: int) -> str:
     return "\n".join(f"surf_modify         droplet_{index} collide droplet_sc" for index in range(1, droplet_count + 1))
 
 
-def render_surface_emit_section(droplet_count: int) -> str:
+def liquid_conduction_config(defaults: dict) -> dict:
+    config = defaults.get("liquid_conduction", {})
+    if not isinstance(config, dict):
+        raise ValueError("liquid_conduction must be an object when provided.")
+    return config
+
+
+def liquid_conduction_enabled(defaults: dict) -> bool:
+    return bool(liquid_conduction_config(defaults).get("enabled", False))
+
+
+def render_droplet_surf_collide(defaults: dict) -> str:
+    if liquid_conduction_enabled(defaults):
+        return "evaprefdrop s_Tdrop ${coeff}"
+    return "evapref ${Twall} ${coeff}"
+
+
+def render_surface_custom_section(defaults: dict) -> str:
+    if not liquid_conduction_enabled(defaults):
+        return ""
+    return "\n".join(
+        [
+            "# Initial custom droplet temperature consumed by evaprefdrop and emit/surf.",
+            "variable            Tdrop_init equal ${Twall}",
+            "custom              surf Tdrop set v_Tdrop_init all NULL",
+        ]
+    )
+
+
+def render_surface_emit_section(droplet_count: int, defaults: dict) -> str:
     lines = [
         "# Vapor source at the droplet surface, following the evaporation-style pattern.",
         "# The emitted half-Maxwellian uses nrho_emit = coeff * vapor_number_density.",
     ]
+    custom_temp = " custom temp s_Tdrop" if liquid_conduction_enabled(defaults) else ""
     for index in range(1, droplet_count + 1):
-        lines.append(f"fix                 droplet_emit_{index} emit/surf droplet_emit droplet_{index} normal yes")
+        lines.append(f"fix                 droplet_emit_{index} emit/surf droplet_emit droplet_{index} normal yes{custom_temp}")
     return "\n".join(lines)
+
+
+def render_conduction_section(droplet_count: int, defaults: dict) -> str:
+    if not liquid_conduction_enabled(defaults):
+        return ""
+
+    config = liquid_conduction_config(defaults)
+    bins = int(config.get("bins", 20))
+    update_steps = int(config.get("update_steps", 10000))
+    conductivity = float(config.get("conductivity_w_m_k", 0.6))
+    density = float(config.get("density_kg_m3", 997.0))
+    specific_heat = float(config.get("specific_heat_j_kg_k", 4180.0))
+    latent_heat = float(defaults["latent_heat_j_per_kg"])
+    require(bins > 0, "liquid_conduction.bins must be positive.")
+    require(update_steps > 0, "liquid_conduction.update_steps must be positive.")
+    require(conductivity > 0.0, "liquid_conduction.conductivity_w_m_k must be positive.")
+    require(density > 0.0, "liquid_conduction.density_kg_m3 must be positive.")
+    require(specific_heat > 0.0, "liquid_conduction.specific_heat_j_kg_k must be positive.")
+
+    lines = [
+        "# Native liquid conduction coupling for droplet surface temperature.",
+        "# cond_mflux_avg_* provides the previous interval's surface mflux to drop/conduction.",
+    ]
+    for index in range(1, droplet_count + 1):
+        lines.extend(
+            [
+                f"compute             mflux_flux_{index} surf droplet_{index} water mflux",
+                f"fix                 cond_mflux_avg_{index} ave/surf droplet_{index} 1 {update_steps} {update_steps} &",
+                f"                    c_mflux_flux_{index}[1] ave one",
+                f"fix                 drop_cond_{index} drop/conduction droplet_{index} {update_steps} f_cond_mflux_avg_{index} &",
+                f"                    Tdrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
 
 
 def render_image_section(image_dump_every: int, defaults: dict, geometry: dict) -> str:
@@ -308,19 +373,28 @@ def render_full_grid_section(defaults: dict) -> str:
 
 def render_diagnostics_section(droplet_count: int, production_run_steps: int, image_dump_every: int, defaults: dict, geometry: dict) -> str:
     sample_every = defaults["sampling_steps"]
+    conduction_enabled = liquid_conduction_enabled(defaults)
     lines = [
         "# Per-droplet condensation diagnostics.",
         "# c_mflux_flux_* stores area-normalized mass flux per unit out-of-plane depth.",
         "# c_mflux_flow_* stores line-integrated mass flow per unit depth.",
     ]
     for index in range(1, droplet_count + 1):
+        if not conduction_enabled:
+            lines.append(f"compute             mflux_flux_{index} surf droplet_{index} water mflux")
         lines.extend(
             [
-                f"compute             mflux_flux_{index} surf droplet_{index} water mflux",
                 f"compute             mflux_flow_{index} surf droplet_{index} water mflux norm flow",
                 f"fix                 avg_droplet_{index} ave/surf droplet_{index} 1 {sample_every} {sample_every} &",
                 f"                    c_mflux_flux_{index}[1] c_mflux_flow_{index}[1] ave one",
-                f"dump                surf_droplet_{index} surf droplet_{index} {sample_every} surf_droplet{index}.dump id area f_avg_droplet_{index}[1] f_avg_droplet_{index}[2]",
+            ]
+        )
+        dump_fields = f"id area f_avg_droplet_{index}[1] f_avg_droplet_{index}[2]"
+        if conduction_enabled:
+            dump_fields += " s_Tdrop"
+        lines.extend(
+            [
+                f"dump                surf_droplet_{index} surf droplet_{index} {sample_every} surf_droplet{index}.dump {dump_fields}",
                 f"dump                surf_geom_{index} surf droplet_{index} {production_run_steps} surf_geom_droplet{index}.dump id area v1x v1y v2x v2y",
                 "",
             ]
@@ -551,12 +625,15 @@ def render_case_input(template_text: str, case: dict, geometry: dict) -> str:
         "__GRID_REGION_SECTION__": build_grid_regions_section(defaults, geometry),
         "__CREATE_GRID_SECTION__": build_create_grid_section(defaults, geometry),
         "__GEOMETRY_SECTION__": render_geometry_section(geometry["centers"]),
+        "__SURFACE_CUSTOM_SECTION__": render_surface_custom_section(defaults),
+        "__DROPLET_SURF_COLLIDE__": render_droplet_surf_collide(defaults),
         "__SURF_MODIFY_SECTION__": render_surf_modify_section(geometry["droplet_count"]),
-        "__SURFACE_EMIT_SECTION__": render_surface_emit_section(geometry["droplet_count"]),
+        "__SURFACE_EMIT_SECTION__": render_surface_emit_section(geometry["droplet_count"], defaults),
         "__YLO_BOUND_MODIFY_SECTION__": (
             "bound_modify        ylo collide wall_sc" if geometry["ylo_boundary"] == "wall" else ""
         ),
         "__TIMESTEP__": format_float(defaults["time_step"]),
+        "__CONDUCTION_SECTION__": render_conduction_section(geometry["droplet_count"], defaults),
         "__PRE_RUN_SECTION__": render_pre_run_section(defaults),
         "__DIAGNOSTICS_SECTION__": render_diagnostics_section(
             geometry["droplet_count"],
@@ -618,6 +695,7 @@ def build_case_metadata(case_name: str, study_name: str, case: dict, geometry: d
         "grid_cells": [geometry["grid_nx"], geometry["grid_ny"], 1],
         "droplet_count": geometry["droplet_count"],
         "latent_heat_j_per_kg": defaults["latent_heat_j_per_kg"],
+        "liquid_conduction": liquid_conduction_config(defaults),
         "droplet_cap_height": geometry["cap_height"],
         "droplet_contact_halfwidth": geometry["footprint_halfwidth"],
         "simulation_bounds": {
@@ -660,16 +738,49 @@ def boundary_state_pairs(cases_cfg: dict, top_temperatures: list[float], top_num
     )
 
 
+def repeat_or_validate(values: list, count: int, name: str) -> list:
+    if len(values) == count:
+        return values
+    if len(values) == 1:
+        return values * count
+    raise ValueError(f"For paired geometry states, {name} must have length 1 or {count}.")
+
+
+def geometry_states(cases_cfg: dict, sweep: dict, defaults: dict) -> list[tuple[float, float, float, float | None]]:
+    spacings = sweep["spacing"]
+    sweep_radii = sweep.get("radius", [defaults.get("radius")])
+    sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
+    sweep_area_ratios = sweep.get("s_liq_over_s_infty", [None])
+
+    require(all(radius is not None for radius in sweep_radii), "radius must be provided in defaults or sweep.")
+    require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
+
+    geometry_mode = cases_cfg.get("geometry_state_mode", "product")
+    if geometry_mode == "product":
+        return [
+            (radius, box_height, spacing, None)
+            for radius, box_height, spacing in itertools.product(sweep_radii, sweep_box_heights, spacings)
+        ]
+    if geometry_mode == "paired":
+        count = max(len(sweep_radii), len(sweep_box_heights), len(spacings), len(sweep_area_ratios))
+        radii = repeat_or_validate(sweep_radii, count, "sweep.radius")
+        box_heights = repeat_or_validate(sweep_box_heights, count, "sweep.box_height")
+        paired_spacings = repeat_or_validate(spacings, count, "sweep.spacing")
+        area_ratios = repeat_or_validate(sweep_area_ratios, count, "sweep.s_liq_over_s_infty")
+        return list(zip(radii, box_heights, paired_spacings, area_ratios))
+    raise ValueError(f"Unsupported geometry_state_mode: {geometry_mode}")
+
+
 def iter_cases(config: dict) -> list[dict]:
     defaults = config["defaults"]
     sweep = config["sweep"]
     cases_cfg = config["cases"]
     top_temperatures = sweep["top_boundary_temperature_k"]
     top_number_densities = sweep["top_boundary_number_density"]
-    spacings = sweep["spacing"]
     sweep_radii = sweep.get("radius", [defaults.get("radius")])
     sweep_box_heights = sweep.get("box_height", [defaults.get("box_height")])
     top_boundary_states = boundary_state_pairs(cases_cfg, top_temperatures, top_number_densities)
+    multi_geometry_states = geometry_states(cases_cfg, sweep, defaults)
     require(all(radius is not None for radius in sweep_radii), "radius must be provided in defaults or sweep.")
     require(all(box_height is not None for box_height in sweep_box_heights), "box_height must be provided in defaults or sweep.")
 
@@ -715,7 +826,7 @@ def iter_cases(config: dict) -> list[dict]:
             )
 
     for top_temperature, top_number_density in top_boundary_states:
-        for radius, box_height, spacing in itertools.product(sweep_radii, sweep_box_heights, spacings):
+        for radius, box_height, spacing, area_ratio in multi_geometry_states:
             case_defaults = dict(defaults)
             case_defaults["radius"] = radius
             case_defaults["box_height"] = box_height
@@ -724,6 +835,8 @@ def iter_cases(config: dict) -> list[dict]:
                 name_suffix_parts.append(f"r_{slug_float(radius)}")
             if include_box_height_in_name:
                 name_suffix_parts.append(f"hbox_{slug_float(box_height)}")
+            if area_ratio is not None:
+                name_suffix_parts.append(f"sratio_{slug_float(area_ratio)}")
             rows.append(
                 {
                     "geometry_mode": cases_cfg["multi_geometry_mode"],

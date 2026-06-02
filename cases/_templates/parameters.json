@@ -20,7 +20,15 @@
     "stats_every": 1000,
     "centerline_band_cells": 1.0,
     "image_dump_every": 0,
-    "latent_heat_j_per_kg": 2430000.0
+    "latent_heat_j_per_kg": 2430000.0,
+    "liquid_conduction": {
+      "enabled": false,
+      "bins": 20,
+      "update_steps": 10000,
+      "conductivity_w_m_k": 0.6,
+      "density_kg_m3": 997.0,
+      "specific_heat_j_kg_k": 4180.0
+    }
   },
   "cases": {
     "include_single_reference": false,

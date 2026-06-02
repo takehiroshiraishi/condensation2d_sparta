@@ -41,8 +41,9 @@ mixture             waterout H2O vstream 0.0 0.0 0.0 temp ${top_temp} nrho ${top
 mixture             droplet_emit H2O vstream 0.0 0.0 0.0 temp ${Twall} nrho ${nrho_emit}
 
 __GEOMETRY_SECTION__
+__SURFACE_CUSTOM_SECTION__
 
-surf_collide        droplet_sc evapref ${Twall} ${coeff}
+surf_collide        droplet_sc __DROPLET_SURF_COLLIDE__
 surf_collide        wall_sc diffuse ${Twall} 1.0
 surf_collide        top_out vanish
 
@@ -58,6 +59,8 @@ timestep            __TIMESTEP__
 
 stats               __STATS_EVERY__
 stats_style         step cpu np nattempt ncoll nscoll nscheck
+
+__CONDUCTION_SECTION__
 
 __PRE_RUN_SECTION__
 
