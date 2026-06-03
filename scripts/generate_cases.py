@@ -259,9 +259,11 @@ def render_surface_custom_section(defaults: dict) -> str:
         return ""
     return "\n".join(
         [
-            "# Initial custom droplet temperature consumed by evaprefdrop and emit/surf.",
+            "# Initial custom droplet state consumed by evaprefdrop and emit/surf.",
             "variable            Tdrop_init equal ${Twall}",
+            "variable            Ndrop_init equal ${nrho_emit}",
             "custom              surf Tdrop set v_Tdrop_init all NULL",
+            "custom              surf Ndrop set v_Ndrop_init all NULL",
         ]
     )
 
@@ -269,9 +271,9 @@ def render_surface_custom_section(defaults: dict) -> str:
 def render_surface_emit_section(droplet_count: int, defaults: dict) -> str:
     lines = [
         "# Vapor source at the droplet surface, following the evaporation-style pattern.",
-        "# The emitted half-Maxwellian uses nrho_emit = coeff * vapor_number_density.",
+        "# With liquid conduction, local saturated s_Ndrop and s_Tdrop drive emission.",
     ]
-    custom_temp = " custom temp s_Tdrop" if liquid_conduction_enabled(defaults) else ""
+    custom_temp = " custom nrho s_Ndrop custom temp s_Tdrop" if liquid_conduction_enabled(defaults) else ""
     for index in range(1, droplet_count + 1):
         lines.append(f"fix                 droplet_emit_{index} emit/surf droplet_emit droplet_{index} normal yes{custom_temp}")
     return "\n".join(lines)
@@ -287,12 +289,16 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
     conductivity = float(config.get("conductivity_w_m_k", 0.6))
     density = float(config.get("density_kg_m3", 997.0))
     specific_heat = float(config.get("specific_heat_j_kg_k", 4180.0))
+    mode = config.get("mode", "transient")
+    relaxation = float(config.get("relaxation", 1.0))
     latent_heat = float(defaults["latent_heat_j_per_kg"])
     require(bins > 0, "liquid_conduction.bins must be positive.")
     require(update_steps > 0, "liquid_conduction.update_steps must be positive.")
     require(conductivity > 0.0, "liquid_conduction.conductivity_w_m_k must be positive.")
     require(density > 0.0, "liquid_conduction.density_kg_m3 must be positive.")
     require(specific_heat > 0.0, "liquid_conduction.specific_heat_j_kg_k must be positive.")
+    require(mode in {"transient", "steady"}, "liquid_conduction.mode must be 'transient' or 'steady'.")
+    require(0.0 < relaxation <= 1.0, "liquid_conduction.relaxation must be in (0, 1].")
 
     lines = [
         "# Native liquid conduction coupling for droplet surface temperature.",
@@ -305,7 +311,8 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
                 f"fix                 cond_mflux_avg_{index} ave/surf droplet_{index} 1 {update_steps} {update_steps} &",
                 f"                    c_mflux_flux_{index}[1] ave one",
                 f"fix                 drop_cond_{index} drop/conduction droplet_{index} {update_steps} f_cond_mflux_avg_{index} &",
-                f"                    Tdrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins}",
+                f"                    Tdrop Ndrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins} &",
+                f"                    mode {mode} relax {format_float(relaxation)}",
                 "",
             ]
         )
@@ -391,7 +398,7 @@ def render_diagnostics_section(droplet_count: int, production_run_steps: int, im
         )
         dump_fields = f"id area f_avg_droplet_{index}[1] f_avg_droplet_{index}[2]"
         if conduction_enabled:
-            dump_fields += " s_Tdrop"
+            dump_fields += " s_Tdrop s_Ndrop"
         lines.extend(
             [
                 f"dump                surf_droplet_{index} surf droplet_{index} {sample_every} surf_droplet{index}.dump {dump_fields}",
