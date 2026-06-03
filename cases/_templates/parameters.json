@@ -23,7 +23,7 @@
     "latent_heat_j_per_kg": 2430000.0,
     "liquid_conduction": {
       "enabled": false,
-      "bins": 20,
+      "bins": "surface",
       "mode": "transient",
       "update_steps": 10000,
       "relaxation": 1.0,

@@ -284,7 +284,11 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
         return ""
 
     config = liquid_conduction_config(defaults)
-    bins = int(config.get("bins", 20))
+    bins_config = config.get("bins", 20)
+    if bins_config == "surface":
+        bins = "surface"
+    else:
+        bins = int(bins_config)
     update_steps = int(config.get("update_steps", 10000))
     conductivity = float(config.get("conductivity_w_m_k", 0.6))
     density = float(config.get("density_kg_m3", 997.0))
@@ -292,7 +296,7 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
     mode = config.get("mode", "transient")
     relaxation = float(config.get("relaxation", 1.0))
     latent_heat = float(defaults["latent_heat_j_per_kg"])
-    require(bins > 0, "liquid_conduction.bins must be positive.")
+    require(bins == "surface" or bins > 0, "liquid_conduction.bins must be positive or 'surface'.")
     require(update_steps > 0, "liquid_conduction.update_steps must be positive.")
     require(conductivity > 0.0, "liquid_conduction.conductivity_w_m_k must be positive.")
     require(density > 0.0, "liquid_conduction.density_kg_m3 must be positive.")
@@ -311,7 +315,7 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
                 f"fix                 cond_mflux_avg_{index} ave/surf droplet_{index} 1 {update_steps} {update_steps} &",
                 f"                    c_mflux_flux_{index}[1] ave one",
                 f"fix                 drop_cond_{index} drop/conduction droplet_{index} {update_steps} f_cond_mflux_avg_{index} &",
-                f"                    Tdrop Ndrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins} &",
+                f"                    Tdrop Ndrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins if bins == 'surface' else bins} &",
                 f"                    mode {mode} relax {format_float(relaxation)}",
                 "",
             ]
