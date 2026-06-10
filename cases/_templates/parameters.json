@@ -27,6 +27,9 @@
       "mode": "transient",
       "update_steps": 10000,
       "relaxation": 1.0,
+      "grid_2d_cell_size": 2.5e-7,
+      "steady2d_tolerance": 1.0e-8,
+      "steady2d_max_iterations": 10000,
       "conductivity_w_m_k": 0.6,
       "density_kg_m3": 997.0,
       "specific_heat_j_kg_k": 4180.0

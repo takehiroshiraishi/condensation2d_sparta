@@ -295,14 +295,24 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
     specific_heat = float(config.get("specific_heat_j_kg_k", 4180.0))
     mode = config.get("mode", "transient")
     relaxation = float(config.get("relaxation", 1.0))
+    grid_2d = config.get("grid_2d_cell_size")
+    tolerance_2d = float(config.get("steady2d_tolerance", 1.0e-8))
+    maxiter_2d = int(config.get("steady2d_max_iterations", 10000))
     latent_heat = float(defaults["latent_heat_j_per_kg"])
     require(bins == "surface" or bins > 0, "liquid_conduction.bins must be positive or 'surface'.")
     require(update_steps > 0, "liquid_conduction.update_steps must be positive.")
     require(conductivity > 0.0, "liquid_conduction.conductivity_w_m_k must be positive.")
     require(density > 0.0, "liquid_conduction.density_kg_m3 must be positive.")
     require(specific_heat > 0.0, "liquid_conduction.specific_heat_j_kg_k must be positive.")
-    require(mode in {"transient", "steady"}, "liquid_conduction.mode must be 'transient' or 'steady'.")
+    require(mode in {"transient", "steady", "steady2d"}, "liquid_conduction.mode must be 'transient', 'steady', or 'steady2d'.")
     require(0.0 < relaxation <= 1.0, "liquid_conduction.relaxation must be in (0, 1].")
+    if mode == "steady2d":
+        if grid_2d is None:
+            grid_2d = defaults["cell_size"]
+        grid_2d = float(grid_2d)
+        require(grid_2d > 0.0, "liquid_conduction.grid_2d_cell_size must be positive.")
+        require(tolerance_2d > 0.0, "liquid_conduction.steady2d_tolerance must be positive.")
+        require(maxiter_2d > 0, "liquid_conduction.steady2d_max_iterations must be positive.")
 
     lines = [
         "# Native liquid conduction coupling for droplet surface temperature.",
@@ -316,7 +326,12 @@ def render_conduction_section(droplet_count: int, defaults: dict) -> str:
                 f"                    c_mflux_flux_{index}[1] ave one",
                 f"fix                 drop_cond_{index} drop/conduction droplet_{index} {update_steps} f_cond_mflux_avg_{index} &",
                 f"                    Tdrop Ndrop ${{Twall}} {format_float(latent_heat)} {format_float(conductivity)} {format_float(density)} {format_float(specific_heat)} {bins if bins == 'surface' else bins} &",
-                f"                    mode {mode} relax {format_float(relaxation)}",
+                f"                    mode {mode} relax {format_float(relaxation)}"
+                + (
+                    f" grid {format_float(grid_2d)} tol {format_float(tolerance_2d)} maxiter {maxiter_2d}"
+                    if mode == "steady2d"
+                    else ""
+                ),
                 "",
             ]
         )
