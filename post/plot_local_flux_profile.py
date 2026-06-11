@@ -27,16 +27,21 @@ def load_json(path: Path) -> dict:
         return json.load(handle)
 
 
-def parse_last_surf_frame(path: Path) -> tuple[list[str], list[dict[str, float]]]:
+def parse_surf_frame(path: Path, average_frames: bool = False) -> tuple[list[str], list[dict[str, float]], str]:
     last_columns: list[str] | None = None
     last_rows: list[dict[str, float]] | None = None
+    last_timestep: int | None = None
+    summed_rows: dict[int, dict[str, float]] = {}
+    row_counts: dict[int, int] = {}
+    averaged_columns: list[str] | None = None
+    averaged_frame_count = 0
 
     with path.open("r", encoding="utf-8") as handle:
         lines = iter(handle)
         for line in lines:
             if line.strip() != "ITEM: TIMESTEP":
                 continue
-            next(lines)
+            timestep = int(next(lines).strip())
             if next(lines).strip() != "ITEM: NUMBER OF SURFS":
                 raise ValueError(f"Unexpected dump format in {path}")
             count = int(next(lines).strip())
@@ -54,10 +59,30 @@ def parse_last_surf_frame(path: Path) -> tuple[list[str], list[dict[str, float]]
                 rows.append(row)
             last_columns = columns
             last_rows = rows
+            last_timestep = timestep
+            if average_frames and timestep != 0:
+                averaged_columns = columns
+                averaged_frame_count += 1
+                for row in rows:
+                    surf_id = int(row["id"])
+                    if surf_id not in summed_rows:
+                        summed_rows[surf_id] = {column: 0.0 for column in columns}
+                        row_counts[surf_id] = 0
+                    for column in columns:
+                        summed_rows[surf_id][column] += row[column]
+                    row_counts[surf_id] += 1
 
     if last_columns is None or last_rows is None:
         raise ValueError(f"No frames found in {path}")
-    return last_columns, last_rows
+    if average_frames and averaged_columns is not None and averaged_frame_count > 0:
+        rows = []
+        for surf_id, row in summed_rows.items():
+            averaged = {column: value / row_counts[surf_id] for column, value in row.items()}
+            averaged["id"] = float(surf_id)
+            rows.append(averaged)
+        rows.sort(key=lambda row: int(row["id"]))
+        return averaged_columns, rows, f"average_nonzero_frames_{averaged_frame_count}"
+    return last_columns, last_rows, f"timestep_{last_timestep}"
 
 
 def droplet_center(metadata: dict, droplet_index: int) -> tuple[float, float]:
@@ -77,6 +102,7 @@ def main() -> int:
     parser.add_argument("--plateau-min-y", type=float, default=50.0e-6, help="Ignore y_axis points below this distance when detecting pressure plateau [m]")
     parser.add_argument("--plateau-window", type=int, default=20, help="Number of consecutive y_axis points used for plateau detection")
     parser.add_argument("--plateau-tolerance", type=float, default=2.0e-3, help="Relative pressure span warning tolerance for plateau detection")
+    parser.add_argument("--average-surface-frames", action="store_true", help="Average all nonzero surf_droplet frames instead of using only the latest frame")
     args = parser.parse_args()
 
     case_dir = args.case_dir.resolve()
@@ -89,8 +115,8 @@ def main() -> int:
     if not geom_path.exists():
         raise FileNotFoundError(f"Missing surface geometry dump: {geom_path}")
 
-    flux_columns, flux_rows = parse_last_surf_frame(flux_path)
-    geom_columns, geom_rows = parse_last_surf_frame(geom_path)
+    flux_columns, flux_rows, flux_frame_label = parse_surf_frame(flux_path, args.average_surface_frames)
+    geom_columns, geom_rows, _ = parse_surf_frame(geom_path)
     flux_column = f"f_avg_droplet_{droplet_index}[1]"
     if flux_column not in flux_columns:
         raise KeyError(f"Missing {flux_column} in {flux_path}")
@@ -211,6 +237,7 @@ def main() -> int:
             )
 
     print(f"Wrote local flux profile to: {output_path}")
+    print(f"Local flux surface frame: {flux_frame_label}")
     print(f"Local flux reference pressure [Pa]: {pressure}")
     print(f"Local flux reference model [kg/m^2/s]: {reference_flux}")
     if drift_reference_flux:
