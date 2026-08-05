@@ -538,6 +538,10 @@ def render_study_profiles_script() -> str:
             "  fi",
             '  echo "Converting steady outputs to VTK for $case_dir"',
             '  python3 "$study_root/post/export_paraview_vtk.py" --mode all "$case_dir"',
+            '  echo "Converting nonzero-frame averaged steady outputs to VTK for $case_dir"',
+            '  python3 "$study_root/post/export_paraview_vtk.py" --mode average "$case_dir"',
+            '  echo "Converting droplet surface geometry to VTK for $case_dir"',
+            '  python3 "$study_root/post/export_droplet_surface_vtk.py" "$case_dir"',
             '  echo "Plotting steady profiles for $case_dir"',
             '  python3 "$study_root/post/plot_steady_profiles.py" "$case_dir"',
             '  echo "Writing local condensation flux profile for $case_dir"',
@@ -851,28 +855,45 @@ def iter_cases(config: dict) -> list[dict]:
                 }
             )
 
-    for top_temperature, top_number_density in top_boundary_states:
-        for radius, box_height, spacing, area_ratio in multi_geometry_states:
-            case_defaults = dict(defaults)
-            case_defaults["radius"] = radius
-            case_defaults["box_height"] = box_height
-            name_suffix_parts = []
-            if include_radius_in_name:
-                name_suffix_parts.append(f"r_{slug_float(radius)}")
-            if include_box_height_in_name:
-                name_suffix_parts.append(f"hbox_{slug_float(box_height)}")
-            if area_ratio is not None:
-                name_suffix_parts.append(f"sratio_{slug_float(area_ratio)}")
-            rows.append(
-                {
-                    "geometry_mode": cases_cfg["multi_geometry_mode"],
-                    "top_boundary_temperature_k": top_temperature,
-                    "top_boundary_number_density": top_number_density,
-                    "spacing": spacing,
-                    "defaults": case_defaults,
-                    "name_suffix_parts": name_suffix_parts,
-                }
-            )
+    def append_multi_case(top_temperature: float, top_number_density: float, radius: float,
+                          box_height: float, spacing: float, area_ratio: float | None) -> None:
+        case_defaults = dict(defaults)
+        case_defaults["radius"] = radius
+        case_defaults["box_height"] = box_height
+        name_suffix_parts = []
+        if include_radius_in_name:
+            name_suffix_parts.append(f"r_{slug_float(radius)}")
+        if include_box_height_in_name:
+            name_suffix_parts.append(f"hbox_{slug_float(box_height)}")
+        if area_ratio is not None:
+            name_suffix_parts.append(f"sratio_{slug_float(area_ratio)}")
+        rows.append(
+            {
+                "geometry_mode": cases_cfg["multi_geometry_mode"],
+                "top_boundary_temperature_k": top_temperature,
+                "top_boundary_number_density": top_number_density,
+                "spacing": spacing,
+                "defaults": case_defaults,
+                "name_suffix_parts": name_suffix_parts,
+            }
+        )
+
+    boundary_geometry_mode = cases_cfg.get("boundary_geometry_state_mode", "product")
+    if boundary_geometry_mode == "product":
+        for top_temperature, top_number_density in top_boundary_states:
+            for radius, box_height, spacing, area_ratio in multi_geometry_states:
+                append_multi_case(top_temperature, top_number_density, radius, box_height, spacing, area_ratio)
+    elif boundary_geometry_mode == "paired":
+        require(
+            len(top_boundary_states) == len(multi_geometry_states),
+            "For boundary_geometry_state_mode='paired', boundary and geometry state counts must match."
+        )
+        for (top_temperature, top_number_density), (radius, box_height, spacing, area_ratio) in zip(
+            top_boundary_states, multi_geometry_states, strict=True
+        ):
+            append_multi_case(top_temperature, top_number_density, radius, box_height, spacing, area_ratio)
+    else:
+        raise ValueError(f"Unsupported boundary_geometry_state_mode: {boundary_geometry_mode}")
     return rows
 
 

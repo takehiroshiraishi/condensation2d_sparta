@@ -207,6 +207,50 @@ def export_all(frames: list[dict], metadata: dict, output_dir: Path, stem: str) 
     write_pvd(output_dir / f"{stem}.pvd", entries)
 
 
+def average_nonzero_frames(frames: list[dict]) -> dict:
+    selected = [frame for frame in frames if frame["timestep"] != 0]
+    if not selected:
+        raise ValueError("No nonzero frames available for averaged VTK output.")
+
+    reference_rows = map_frame_fields(selected[0]["rows"])
+    sum_rows = {int(row["id"]): dict(row) for row in reference_rows}
+    for row in sum_rows.values():
+        for field in ("nrho", "u", "v", "trot", "temp", "press"):
+            row[field] = float(row.get(field, 0.0))
+
+    for frame in selected[1:]:
+        for row in map_frame_fields(frame["rows"]):
+            summed = sum_rows[int(row["id"])]
+            for field in ("nrho", "u", "v", "trot", "temp", "press"):
+                summed[field] += float(row.get(field, 0.0))
+
+    count = float(len(selected))
+    averaged_rows = []
+    for row_id in sorted(sum_rows):
+        row = sum_rows[row_id]
+        for field in ("nrho", "u", "v", "trot", "temp", "press"):
+            row[field] /= count
+        averaged_rows.append(row)
+
+    return {
+        "timestep": selected[-1]["timestep"],
+        "rows": averaged_rows,
+        "averaged_timesteps": [frame["timestep"] for frame in selected],
+    }
+
+
+def export_average(frames: list[dict], metadata: dict, output_path: Path) -> Path:
+    averaged_raw_frame = average_nonzero_frames(frames)
+    frame = build_frame(averaged_raw_frame, metadata)
+    if frame["is_rectilinear"]:
+        path = output_path.with_suffix(".vtr")
+        write_vtr(path, frame)
+    else:
+        path = output_path.with_suffix(".vtu")
+        write_vtu(path, frame)
+    return path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert SPARTA condensation2d grid dumps to ParaView-readable files.")
     parser.add_argument("case_dir", type=Path)
@@ -214,8 +258,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slice-dump", default="line_x0.dump")
     parser.add_argument("--grid-output", default="grid_steady_legacy.vtk")
     parser.add_argument("--slice-output", default="line_x0_legacy.vtk")
-    parser.add_argument("--mode", choices=("last", "all"), default="last")
+    parser.add_argument("--mode", choices=("last", "all", "average"), default="last")
     parser.add_argument("--series-dir", default="vtk_series")
+    parser.add_argument("--average-grid-output", default="grid_steady_average")
+    parser.add_argument("--average-slice-output", default="line_x0_average")
     return parser.parse_args()
 
 
@@ -239,6 +285,15 @@ def main() -> int:
                 print(f"Wrote {case_dir / args.slice_output}")
             else:
                 print(f"Wrote {(case_dir / args.slice_output).with_suffix('.vtu')}")
+        return 0
+
+    if args.mode == "average":
+        if grid_dump.exists():
+            path = export_average(parse_grid_dump_frames(grid_dump), metadata, case_dir / args.average_grid_output)
+            print(f"Wrote {path}")
+        if line_dump.exists():
+            path = export_average(parse_grid_dump_frames(line_dump), metadata, case_dir / args.average_slice_output)
+            print(f"Wrote {path}")
         return 0
 
     series_dir = case_dir / args.series_dir
